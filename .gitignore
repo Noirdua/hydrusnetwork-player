@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.vscode/
+.DS_Store
+/public/icon-*.png
+.playwright-mcp/
+.playwright-mcp
+/.playwright-mcp/
+.kilo
+/.kilo/
+.readium-catalog.json
