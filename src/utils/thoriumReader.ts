@@ -45,14 +45,32 @@ export function openInBrowserReader(track: Track) {
   if (!openedWindow) window.location.href = track.url
 }
 
-export function buildThoriumReaderHref(fileUrl: string, origin = window.location.origin) {
-  const encodedSource = encodeUrlSafeBase64(fileUrl)
-  const manifestUrl = `${origin.replace(/\/+$/, '')}/readium/webpub/${encodedSource}/manifest.json`
+export async function registerThoriumSource(fileUrl: string, origin = window.location.origin.replace(/\/+$/, '')) {
+  const response = await fetch(`${origin}/readium/source`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: fileUrl }),
+  })
+  if (!response.ok) throw new Error(`Failed to register publication (${response.status})`)
+  const data = await response.json().catch(() => null) as { id?: unknown } | null
+  if (typeof data?.id !== 'string' || !data.id) throw new Error('Invalid publication id')
+  return data.id
+}
+
+export async function buildThoriumReaderHref(fileUrl: string, origin = window.location.origin) {
+  const base = origin.replace(/\/+$/, '')
+  let encodedSource = encodeUrlSafeBase64(fileUrl)
+  try {
+    encodedSource = await registerThoriumSource(fileUrl, base)
+  } catch {
+    // Fall back to the encoded file URL if the streamer is unavailable.
+  }
+  const manifestUrl = `${base}/readium/webpub/${encodedSource}/manifest.json`
   return `${getThoriumWebUrl()}/read/manifest/${encodeURIComponent(manifestUrl)}`
 }
 
-export function openInThoriumReader(track: Track) {
-  const href = buildThoriumReaderHref(track.url)
+export async function openInThoriumReader(track: Track) {
+  const href = await buildThoriumReaderHref(track.url)
   const openedWindow = window.open(href, '_blank', 'noopener,noreferrer')
   if (!openedWindow) window.location.href = href
 }

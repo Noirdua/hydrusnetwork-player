@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { unzipSync } from 'fflate'
 import { loadEnv } from 'vite'
@@ -12,6 +13,8 @@ export const READIUM_PREFIX = '/readium'
 const MAX_PUBLICATION_BYTES = 150 * 1024 * 1024
 const CACHE_LIMIT = 8
 const publicationCache = new Map()
+const sourceAliases = new Map()
+const SOURCE_ALIAS_LIMIT = 400
 
 const MIME_BY_EXT = {
   xhtml: 'text/html',
@@ -161,6 +164,24 @@ function withPositionsLink(manifest, selfHref) {
   }
   manifest.links = links
   return manifest
+}
+
+function rememberSourceUrl(sourceUrl) {
+  for (const [id, url] of sourceAliases) {
+    if (url === sourceUrl) return id
+  }
+  const id = randomBytes(16).toString('hex')
+  sourceAliases.set(id, sourceUrl)
+  if (sourceAliases.size > SOURCE_ALIAS_LIMIT) {
+    const oldest = sourceAliases.keys().next().value
+    if (oldest) sourceAliases.delete(oldest)
+  }
+  return id
+}
+
+function resolveSourceUrl(encodedSource) {
+  if (sourceAliases.has(encodedSource)) return sourceAliases.get(encodedSource)
+  return decodeBase64Url(encodedSource)
 }
 
 function isAllowedSourceUrl(raw) {
@@ -622,7 +643,7 @@ async function buildHydrusCatalog(req) {
     const author = namespaceValue(tags, 'author') || namespaceValue(tags, 'creator') || 'Unknown'
     const fileUrl = hydrusUrl(host, '/get_files/file', { file_id: fileId }, apiKey)
     const cover = hydrusUrl(host, '/get_files/thumbnail', { file_id: fileId }, apiKey)
-    const manifestUrl = `${origin}${READIUM_PREFIX}/webpub/${encodeUrlSafeBase64(fileUrl)}/manifest.json`
+    const manifestUrl = `${origin}${READIUM_PREFIX}/webpub/${rememberSourceUrl(fileUrl)}/manifest.json`
     return {
       title,
       author,
@@ -661,6 +682,28 @@ export async function handleReadiumRequest(req, res) {
 
   const pathOnly = rawUrl.split('?')[0]
   const isCatalog = pathOnly === `${READIUM_PREFIX}/catalog` || pathOnly === `${READIUM_PREFIX}/catalog.json`
+
+  if (pathOnly === `${READIUM_PREFIX}/source` && req.method === 'POST') {
+    try {
+      const body = await readJsonBody(req)
+      const sourceUrl = String(body?.url || '')
+      if (!isAllowedSourceUrl(sourceUrl)) {
+        send(res, 400, JSON.stringify({ ok: false, error: 'Invalid publication URL' }), {
+          'Content-Type': 'application/json; charset=utf-8',
+        })
+        return true
+      }
+      const id = rememberSourceUrl(sourceUrl)
+      send(res, 200, JSON.stringify({ ok: true, id }), {
+        'Content-Type': 'application/json; charset=utf-8',
+      })
+    } catch {
+      send(res, 400, JSON.stringify({ ok: false, error: 'Invalid source' }), {
+        'Content-Type': 'application/json; charset=utf-8',
+      })
+    }
+    return true
+  }
 
   if (isCatalog && req.method === 'POST') {
     try {
@@ -717,7 +760,7 @@ export async function handleReadiumRequest(req, res) {
 
   let sourceUrl
   try {
-    sourceUrl = decodeBase64Url(parsed.encodedSource)
+    sourceUrl = resolveSourceUrl(parsed.encodedSource)
   } catch {
     send(res, 400, 'Invalid publication id')
     return true

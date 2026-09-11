@@ -90,14 +90,16 @@ function DownloadRow({ download, onCancel, onSaveAgain, onDismiss }: {
             Cancel
           </Button>
         ) : null}
-        {download.status === 'completed' && download.saveHref ? (
+        {download.status === 'completed' ? (
           <Button variant="contained" onClick={() => onSaveAgain(download.id)}>
             Download Again
           </Button>
         ) : null}
-        <Button variant="text" color="inherit" onClick={() => onDismiss(download.id)}>
-          Remove
-        </Button>
+        {download.status === 'downloading' ? null : (
+          <Button variant="text" color="inherit" onClick={() => onDismiss(download.id)}>
+            Remove
+          </Button>
+        )}
       </Box>
     </Paper>
   )
@@ -105,7 +107,8 @@ function DownloadRow({ download, onCancel, onSaveAgain, onDismiss }: {
 
 export default function DownloadsPage({ downloads, onCancel, onSaveAgain, onDismiss, onClearFinished }: DownloadsPageProps) {
   const activeDownloads = useMemo(() => downloads.filter((download) => download.status === 'downloading'), [downloads])
-  const finishedDownloads = useMemo(() => downloads.filter((download) => download.status !== 'downloading'), [downloads])
+  const finishedDownloads = useMemo(() => downloads.filter((download) => download.status === 'completed'), [downloads])
+  const otherDownloads = useMemo(() => downloads.filter((download) => download.status === 'cancelled' || download.status === 'error'), [downloads])
 
   return (
     <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 1100, mx: 'auto', width: '100%' }}>
@@ -119,6 +122,9 @@ export default function DownloadsPage({ downloads, onCancel, onSaveAgain, onDism
       <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2.5 }}>
         <Chip color="primary" variant="outlined" label={activeDownloads.length === 1 ? '1 active download' : `${activeDownloads.length} active downloads`} />
         <Chip color="success" variant="outlined" label={finishedDownloads.length === 1 ? '1 stored item' : `${finishedDownloads.length} stored items`} />
+        {otherDownloads.length > 0 && (
+          <Chip color="warning" variant="outlined" label={otherDownloads.length === 1 ? '1 failed/cancelled' : `${otherDownloads.length} failed/cancelled`} />
+        )}
         {finishedDownloads.length > 0 && (
           <Button variant="text" onClick={onClearFinished}>
             Clear Finished
@@ -158,9 +164,9 @@ export default function DownloadsPage({ downloads, onCancel, onSaveAgain, onDism
           <Typography variant="h6" sx={{ mb: 1.5 }}>
             Stored
           </Typography>
-          {finishedDownloads.length > 0 ? (
+          {finishedDownloads.length > 0 || otherDownloads.length > 0 ? (
             <Box sx={{ display: 'grid', gap: 1.5 }}>
-              {finishedDownloads.map((download) => (
+              {[...finishedDownloads, ...otherDownloads].map((download) => (
                 <DownloadRow
                   key={download.id}
                   download={download}

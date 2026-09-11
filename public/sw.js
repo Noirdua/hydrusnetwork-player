@@ -66,20 +66,28 @@ async function createRangeResponse(cachedResponse, rangeHeader) {
   })
 }
 
+function isHydrusFileRequest(url) {
+  return /\/get_files\/(file|thumbnail)\?/i.test(url || '')
+}
+
+function isThumbnailRequest(url) {
+  return /\/get_files\/thumbnail\?/i.test(url || '')
+}
+
 async function handleMediaRequest(event) {
+  const rangeHeader = event.request.headers && event.request.headers.get && event.request.headers.get('range')
+  if (rangeHeader || isHydrusFileRequest(event.request.url)) {
+    return fetch(event.request)
+  }
+
   const mediaCache = await caches.open(MEDIA_CACHE_NAME)
   const cacheKey = event.request.url
-  const rangeHeader = event.request.headers && event.request.headers.get && event.request.headers.get('range')
   const cached = await mediaCache.match(cacheKey).catch(() => null)
-
-  if (cached) {
-    if (rangeHeader) return createRangeResponse(cached, rangeHeader)
-    return cached
-  }
+  if (cached) return cached
 
   const networkResponse = await fetch(event.request)
 
-  if (!rangeHeader && networkResponse.ok && networkResponse.status === 200) {
+  if (networkResponse.ok && networkResponse.status === 200 && !isThumbnailRequest(event.request.url)) {
     event.waitUntil(
       mediaCache.put(cacheKey, networkResponse.clone()).then(() => trimMediaCache(mediaCache)).catch(() => undefined)
     )
@@ -119,7 +127,7 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll(ASSETS)
-    }).then(() => self.skipWaiting())
+    }))
   )
 })
 
@@ -141,7 +149,6 @@ self.addEventListener('fetch', (event) => {
   const isAudioRequest = destination === 'audio' || /audio\//i.test(acceptHeader)
   const isMediaRequest = isVideoRequest
     || isAudioRequest
-    || /\/get_files\/(file|thumbnail)\?/i.test(url)
     || /\.(m3u8|mp4|webm|ogg|mov)(\?|$)/i.test(url)
 
   if (isNativeVideoBypass || isVideoRequest) {

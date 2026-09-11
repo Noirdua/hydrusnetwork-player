@@ -105,7 +105,7 @@ export async function embedContainerAudioMetadata(blob: Blob, extension: string 
         '-y',
         '-i', inputPath,
         '-map', '0',
-        '-map_metadata', '-1',
+        '-map_metadata', '0',
         '-c', 'copy',
         ...buildMetadataArgs(metadata),
         outputPath,
@@ -116,9 +116,9 @@ export async function embedContainerAudioMetadata(blob: Blob, extension: string 
       }
 
       const outputData = await ffmpeg.readFile(outputPath)
-      const outputBytes = outputData instanceof Uint8Array ? outputData : new Uint8Array(new TextEncoder().encode(String(outputData)))
-      const outputCopy = new Uint8Array(outputBytes.byteLength)
-      outputCopy.set(outputBytes)
+      if (!(outputData instanceof Uint8Array)) return blob
+      const outputCopy = new Uint8Array(outputData.byteLength)
+      outputCopy.set(outputData)
       return new Blob([outputCopy], { type: blob.type || 'application/octet-stream' })
     } finally {
       try { await ffmpeg.deleteFile(inputPath) } catch {}

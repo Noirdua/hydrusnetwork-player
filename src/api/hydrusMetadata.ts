@@ -2,6 +2,7 @@ export type HydrusMediaInfo = {
   mimeType?: string
   isVideo?: boolean
   hasThumbnail?: boolean
+  durationMs?: number
 }
 
 export type HydrusFileMetadata = HydrusMediaInfo & {
@@ -151,7 +152,11 @@ function walkFileFields(metadata: unknown): WalkedFileFields {
 }
 
 function mediaInfoFromFields(fields: WalkedFileFields): HydrusMediaInfo {
-  const withThumbnail = (info: HydrusMediaInfo): HydrusMediaInfo => ({ ...info, hasThumbnail: fields.hasThumbnail })
+  const withThumbnail = (info: HydrusMediaInfo): HydrusMediaInfo => ({
+    ...info,
+    hasThumbnail: fields.hasThumbnail,
+    durationMs: fields.durationMs,
+  })
 
   for (const candidate of fields.mimeCandidates) {
     const mimeType = normalizeMimeType(candidate)
@@ -172,7 +177,7 @@ function mediaInfoFromFields(fields: WalkedFileFields): HydrusMediaInfo {
 }
 
 export function extractMediaInfoFromMetadata(data: unknown, fileId: number): HydrusMediaInfo {
-  const metadata = getFileMetadataEntry(data, fileId) || data
+  const metadata = getFileMetadataEntry(data, fileId)
   if (!metadata || typeof metadata !== 'object') return {}
   return mediaInfoFromFields(walkFileFields(metadata))
 }
@@ -279,11 +284,12 @@ export function extractTagsFromFileObject(meta: unknown): string[] {
 export function extractTagsFromMetadata(data: unknown, fileId: number): string[] {
   const entry = getFileMetadataEntry(data, fileId)
   if (entry) return extractTagsFromFileObject(entry)
-  return extractTagsFromFileObject(data)
+  return []
 }
 
 export function extractFileDetailsFromMetadata(data: unknown, fileId: number): HydrusFileDetails {
-  const metadata = getFileMetadataEntry(data, fileId) || data || {}
+  const metadata = getFileMetadataEntry(data, fileId)
+  if (!metadata || typeof metadata !== 'object') return { fileId, tags: [] }
   const fields = walkFileFields(metadata)
   const mediaInfo = mediaInfoFromFields(fields)
   const tags = extractTagsFromMetadata(data, fileId)

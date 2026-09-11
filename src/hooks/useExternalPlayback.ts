@@ -43,7 +43,7 @@ export function useExternalPlayback({
           href: track.url,
         }
       })
-      openInThoriumReader(track)
+      void openInThoriumReader(track)
       return
     }
 
@@ -103,6 +103,7 @@ export function useExternalPlayback({
       let res = await fetch(track.url, { method: 'HEAD', mode: 'cors', signal })
       if (!res.ok) {
         res = await fetch(track.url, { method: 'GET', mode: 'cors', headers: { Range: 'bytes=0-0' }, signal })
+        try { await res.body?.cancel() } catch {}
       }
 
       const mimeType = res.headers.get('content-type') || undefined

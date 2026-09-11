@@ -63,14 +63,6 @@ function readViteEnv(name: string) {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function originsMatch(left: string, right: string) {
-  try {
-    return new URL(left).origin === new URL(right).origin
-  } catch {
-    return false
-  }
-}
-
 function rewriteHttpHydrusToSameOriginProxy(absoluteUrl: string) {
   if (typeof window === 'undefined' || window.location?.protocol !== 'https:') return absoluteUrl
   if (!/^http:\/\//i.test(absoluteUrl)) return absoluteUrl
@@ -78,10 +70,19 @@ function rewriteHttpHydrusToSameOriginProxy(absoluteUrl: string) {
   const proxyEnabled = readViteEnv('VITE_HYDRUS_PROXY_ENABLED').toLowerCase()
   if (proxyEnabled !== 'true' && proxyEnabled !== '1' && proxyEnabled !== 'yes') return absoluteUrl
 
-  const proxyTarget = readViteEnv('VITE_HYDRUS_PROXY_TARGET')
-  if (!proxyTarget || !originsMatch(absoluteUrl, proxyTarget)) return absoluteUrl
-
   return `${window.location.origin}/hydrus-proxy`
+}
+
+function redactAccessKey(value: string) {
+  return value.replace(/Hydrus-Client-API-Access-Key=[^&\s]*/gi, 'Hydrus-Client-API-Access-Key=REDACTED')
+}
+
+async function cancelResponseBody(response: Response) {
+  try {
+    await response.body?.cancel()
+  } catch {
+    try { await response.arrayBuffer() } catch {}
+  }
 }
 
 function clientSignature(cfg: Pick<ServerConfig, 'host' | 'port' | 'apiKey' | 'ssl' | 'forceApiKeyInQuery'>) {
@@ -381,17 +382,17 @@ export class HydrusClient {
 
     if (res.status === 404) {
       const text = await res.text().catch(() => '')
-      console.warn('[HydrusClient] searchFiles 404', { url, status: res.status, body: text })
-      throw new Error(`Search failed (404): ${text ? text : 'Not Found'} (request: ${url}). Note: /get_files/search_files expects GET with a 'tags' query parameter. Avoid POST fallback as this endpoint may not accept POST.`)
+      console.warn('[HydrusClient] searchFiles 404', { url: redactAccessKey(url), status: res.status, body: text })
+      throw new Error(`Search failed (404): ${text ? text : 'Not Found'} (request: ${redactAccessKey(url)}). Note: /get_files/search_files expects GET with a 'tags' query parameter. Avoid POST fallback as this endpoint may not accept POST.`)
     }
 
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       console.warn('[HydrusClient] searchFiles Response Error', { status: res.status, statusText: res.statusText, body: text })
-      throw new Error(`Search failed (${res.status})${text ? ': ' + (text.length > 1000 ? text.slice(0, 1000) + '...' : text) : ''} (request: ${url})`)
+      throw new Error(`Search failed (${res.status})${text ? ': ' + (text.length > 1000 ? text.slice(0, 1000) + '...' : text) : ''} (request: ${redactAccessKey(url)})`)
     }
 
-    const data = await res.json()
+    const data = await res.json().catch(() => null)
     if (Array.isArray(data)) return data as number[]
     if (data && Array.isArray((data as { file_ids?: unknown }).file_ids)) return (data as { file_ids: number[] }).file_ids
     if (data && Array.isArray((data as { results?: unknown }).results)) return (data as { results: number[] }).results
@@ -415,9 +416,9 @@ export class HydrusClient {
 
       const headers = this.getHeaders(!(this.cfg.forceApiKeyInQuery ?? false))
 
-      const res = await fetch(searchUrl, { method: 'GET', headers, mode: 'cors' })
+      const res = await this.fetchWithAuthRetry(searchUrl, { method: 'GET', headers })
 
-      if ((res.status === 401 || res.status === 403) && this.cfg.apiKey && !(this.cfg.forceApiKeyInQuery ?? false)) {
+      if ((res.status === 401 || res.status === 403) && this.cfg.apiKey) {
         return { ok: false, message: `Authentication required (status ${res.status})`, status: res.status }
       }
 
@@ -428,7 +429,7 @@ export class HydrusClient {
 
       if (!res.ok) return { ok: false, message: `Search request failed (status ${res.status})`, status: res.status }
 
-      const json = await res.json()
+      const json = await res.json().catch(() => null)
       const fileId = Array.isArray(json) && json.length > 0 ? json[0] : json?.file_ids?.[0] ?? null
 
       const result: ConnectivityResult = { ok: true, message: 'Connected (search OK)', status: res.status, searchOk: true }
@@ -441,7 +442,9 @@ export class HydrusClient {
           headers2['Range'] = 'bytes=0-0'
 
           const rres = await fetch(fileUrl, { method: 'GET', headers: headers2, mode: 'cors' })
-          if (rres.status === 206 || (rres.headers.get('accept-ranges') || '').toLowerCase() === 'bytes') {
+          const rangeSupported = rres.status === 206 || (rres.headers.get('accept-ranges') || '').toLowerCase() === 'bytes'
+          await cancelResponseBody(rres)
+          if (rangeSupported) {
             result.rangeSupported = true
             result.message += '; Range requests supported'
             return result
@@ -450,7 +453,9 @@ export class HydrusClient {
           if (this.cfg.apiKey) {
             const qUrl = `${this.getFileUrl(fileId, true)}`
             const rres2 = await fetch(qUrl, { method: 'GET', headers: { Range: 'bytes=0-0' }, mode: 'cors' })
-            if (rres2.status === 206 || (rres2.headers.get('accept-ranges') || '').toLowerCase() === 'bytes') {
+            const queryRangeSupported = rres2.status === 206 || (rres2.headers.get('accept-ranges') || '').toLowerCase() === 'bytes'
+            await cancelResponseBody(rres2)
+            if (queryRangeSupported) {
               result.rangeSupported = true
               result.message += '; Range requests supported (via query param)'
               return result

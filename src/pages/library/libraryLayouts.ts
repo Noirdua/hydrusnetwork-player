@@ -23,8 +23,8 @@ export function resolveViewLayout(
   displayMode: DisplayMode,
 ): LibraryLayoutId {
   if (overrideLayout) return overrideLayout
-  if (configuredLayout) return configuredLayout
-  return displayMode === 'table' ? 'table' : 'grid'
+  if (displayMode === 'table') return 'table'
+  return configuredLayout || 'grid'
 }
 
 export function buildNestedCatalog(

@@ -4,6 +4,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import type { Track } from '../../types'
 import { formatDuration, getTrackArtworkSrc, getTrackDisplayTitle } from './libraryHelpers'
+import { getTrackCacheKey } from '../../utils/trackMetadata'
 import type { TrackInteractionProps } from './LibraryLists'
 
 type NestedCatalogLayoutProps = {
@@ -140,7 +141,7 @@ export default function NestedCatalogLayout({ groups, labels, getInteractionProp
                             const duration = formatDuration(track.duration)
                             return (
                               <Box
-                                key={track.id}
+                                key={getTrackCacheKey(track.serverId, track.fileId) || track.id}
                                 {...getInteractionProps(track)}
                                 sx={{
                                   display: 'flex',

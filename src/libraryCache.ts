@@ -35,7 +35,7 @@ const DB_CONFIG = {
   storeName: 'snapshots',
   keyPath: 'cacheKey',
 }
-const MAX_TRACKS = 5000
+const MAX_TRACKS_PER_KIND = 2500
 const textEncoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null
 
 export function buildLibraryCacheKey(servers: CacheServerDescriptor[]) {
@@ -107,9 +107,17 @@ export async function getLibraryCacheStats(activeCacheKey: string): Promise<Libr
 export async function saveLibraryCache(cacheKey: string, tracks: Track[]) {
   if (!cacheKey || typeof indexedDB === 'undefined') return
 
-  const trimmedTracks = tracks
-    .filter((track) => track.serverId && track.fileId != null && track.url)
-    .slice(-MAX_TRACKS)
+  const validTracks = tracks.filter((track) => track.serverId && track.fileId != null && track.url)
+  const tracksByKind = new Map<string, Track[]>()
+  for (const track of validTracks) {
+    const kind = track.mediaKind || 'all'
+    const bucket = tracksByKind.get(kind) || []
+    bucket.push(track)
+    tracksByKind.set(kind, bucket)
+  }
+
+  const trimmedTracks = Array.from(tracksByKind.values())
+    .flatMap((bucket) => bucket.slice(-MAX_TRACKS_PER_KIND))
     .map(({ id: _id, ...track }) => track)
 
   const record: LibraryCacheRecord = {

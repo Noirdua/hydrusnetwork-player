@@ -107,7 +107,7 @@ export function matchesSystemPredicate(track: Track, rawValue: string, section: 
   const normalized = normalizeSearchText(rawValue).replace(/^system:/, '')
   if (!normalized || normalized === 'everything') return true
 
-  const fileTypeMatch = normalized.match(/^filetype\s*=\s*(audio|video|image|application)$/)
+  const fileTypeMatch = normalized.match(/^filetype\s*=\s*(audio|video|image|application|books)$/)
   if (fileTypeMatch) {
     return matchesMediaSection(track, fileTypeMatch[1] as MediaSection)
   }

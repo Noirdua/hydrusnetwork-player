@@ -136,6 +136,7 @@ export async function syncLibraryCache(servers: LibrarySyncServer[], options: { 
               hasThumbnail: metadata.hasThumbnail,
               mimeType: metadata.mimeType,
               isVideo: metadata.isVideo ?? (section.id === 'video' ? true : undefined),
+              duration: metadata.durationMs,
               mediaKind,
             }
           }

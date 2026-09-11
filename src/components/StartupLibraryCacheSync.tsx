@@ -48,44 +48,52 @@ export default function StartupLibraryCacheSync() {
     ].join('|'))
     .join(','), [onlineServerIds, servers])
 
-  useEffect(() => {
-    if (!healthChecksComplete || !servers.length || !syncSignature || lastSyncSignatureRef.current === syncSignature) return
+  const serversRef = useRef(servers)
+  const onlineServerIdsRef = useRef(onlineServerIds)
+  const updateServerRef = useRef(updateServer)
+  serversRef.current = servers
+  onlineServerIdsRef.current = onlineServerIds
+  updateServerRef.current = updateServer
 
-    lastSyncSignatureRef.current = syncSignature
-    let cancelled = false
-    const targetServerIds = onlineServerIds.filter((serverId) => servers.some((server) => server.id === serverId))
+  const inFlightRef = useRef(false)
+
+  useEffect(() => {
+    if (!healthChecksComplete || !serversRef.current.length || !syncSignature || lastSyncSignatureRef.current === syncSignature || inFlightRef.current) return
+
+    const currentServers = serversRef.current
+    const targetServerIds = onlineServerIdsRef.current.filter((serverId) => currentServers.some((server) => server.id === serverId))
 
     if (targetServerIds.length === 0) return
 
-    void publishHydrusEpubCatalogFromCache(buildLibraryCacheKey(servers)).catch((error: unknown) => {
+    void publishHydrusEpubCatalogFromCache(buildLibraryCacheKey(currentServers)).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       addDevLog({ kind: 'error', category: 'thorium', message: `Background EPUB catalog publish failed: ${message}` })
     })
 
     const lastSync = readLastAutoSync()
     if (lastSync && lastSync.signature === syncSignature && Date.now() - lastSync.at < AUTO_SYNC_TTL_MS) {
+      lastSyncSignatureRef.current = syncSignature
       return
     }
 
-    void syncLibraryCache(servers, { targetServerIds })
+    inFlightRef.current = true
+    void syncLibraryCache(currentServers, { targetServerIds })
       .then((result) => {
-        if (cancelled) return
-
+        lastSyncSignatureRef.current = syncSignature
         writeLastAutoSync(syncSignature)
 
         for (const [serverId, summary] of Object.entries(result.summaries)) {
-          updateServer(serverId, { syncSummary: summary })
+          updateServerRef.current(serverId, { syncSummary: summary })
         }
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
         addDevLog({ kind: 'error', category: 'library-cache', message: `Background cache sync failed: ${message}` })
       })
-
-    return () => {
-      cancelled = true
-    }
-  }, [healthChecksComplete, onlineServerIds, servers, syncSignature, updateServer])
+      .finally(() => {
+        inFlightRef.current = false
+      })
+  }, [healthChecksComplete, syncSignature])
 
   return null
 }

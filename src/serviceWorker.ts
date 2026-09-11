@@ -2,9 +2,10 @@ export function registerServiceWorker() {
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       let refreshing = false
+      const hadController = Boolean(navigator.serviceWorker.controller)
 
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (refreshing) return
+        if (!hadController || refreshing) return
         refreshing = true
         window.location.reload()
       })

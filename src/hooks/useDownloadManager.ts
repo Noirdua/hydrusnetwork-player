@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { makeId, type HydrusFileDetails } from '../api/hydrusClient'
 import { addDevLog } from '../debugLog'
 import type { DownloadOverlayItem } from '../components/DownloadsOverlay'
-import { clearStoredDownloads, deleteStoredDownload, listStoredDownloads, saveStoredDownload } from '../downloadStore'
+import { clearStoredDownloads, deleteStoredDownload, getStoredDownloadBlob, listStoredDownloads, saveStoredDownload } from '../downloadStore'
 import type { Track } from '../types'
 import { buildHydrusDownloadDisplayTitle } from '../utils/trackMetadata'
 import {
@@ -17,6 +17,8 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
   const downloadAbortControllersRef = useRef<Record<string, AbortController>>({})
   const downloadUrlsRef = useRef<Record<string, string>>({})
   const inFlightTrackKeysRef = useRef(new Set<string>())
+  const cancelledIdsRef = useRef(new Set<string>())
+  const persistGenerationRef = useRef(0)
 
   useEffect(() => {
     let cancelled = false
@@ -25,22 +27,16 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
       .then((records) => {
         if (cancelled || records.length === 0) return
 
-        const restoredDownloads: DownloadOverlayItem[] = records.map((record) => {
-          const objectUrl = window.URL.createObjectURL(record.blob)
-          downloadUrlsRef.current[record.id] = objectUrl
-
-          return {
-            id: record.id,
-            trackKey: record.trackKey,
-            title: record.title,
-            fileName: record.fileName,
-            status: 'completed',
-            receivedBytes: record.receivedBytes,
-            totalBytes: record.totalBytes,
-            saveHref: objectUrl,
-            note: record.note,
-          }
-        })
+        const restoredDownloads: DownloadOverlayItem[] = records.map((record) => ({
+          id: record.id,
+          trackKey: record.trackKey,
+          title: record.title,
+          fileName: record.fileName,
+          status: 'completed',
+          receivedBytes: record.receivedBytes,
+          totalBytes: record.totalBytes,
+          note: record.note,
+        }))
 
         setDownloads((prev) => {
           const existingIds = new Set(prev.map((download) => download.id))
@@ -107,6 +103,7 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
 
     const controller = new AbortController()
     downloadAbortControllersRef.current[id] = controller
+    const persistGeneration = persistGenerationRef.current
 
     void (async () => {
       try {
@@ -159,6 +156,8 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
           })
         }
 
+        if (controller.signal.aborted || cancelledIdsRef.current.has(id)) return
+
         const shouldEmbedMetadataClientSide = !isAppleMobileOrTablet
         const taggedDownload = shouldEmbedMetadataClientSide
           ? await (async () => {
@@ -172,36 +171,48 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
             note: 'iOS download: using server-provided metadata (client embedding skipped)',
           }
 
+        if (controller.signal.aborted || cancelledIdsRef.current.has(id)) return
+
         blob = taggedDownload.blob
         const downloadName = buildTrackDownloadName(track, details, response.headers.get('content-disposition'))
         const objectUrl = window.URL.createObjectURL(blob)
         downloadUrlsRef.current[id] = objectUrl
         triggerBrowserDownload(objectUrl, downloadName)
 
-        try {
-          await saveStoredDownload({
-            id,
-            trackKey,
-            title: buildHydrusDownloadDisplayTitle(track, details),
-            fileName: downloadName,
-            receivedBytes: blob.size,
-            totalBytes: blob.size || resolvedTotalBytes || null,
-            note: taggedDownload.note,
-            blob,
-            savedAt: Date.now(),
-          })
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error)
-          addDevLog({ kind: 'error', category: 'downloads', message: `Failed to persist download: ${message}` })
+        let persistNote = taggedDownload.note
+        if (persistGeneration === persistGenerationRef.current && !cancelledIdsRef.current.has(id)) {
+          try {
+            await saveStoredDownload({
+              id,
+              trackKey,
+              title: buildHydrusDownloadDisplayTitle(track, details),
+              fileName: downloadName,
+              receivedBytes: blob.size,
+              totalBytes: blob.size || resolvedTotalBytes || null,
+              note: taggedDownload.note,
+              blob,
+              savedAt: Date.now(),
+            })
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error)
+            persistNote = persistNote ? `${persistNote} • Not stored for later` : 'Saved this session only (storage failed)'
+            addDevLog({ kind: 'error', category: 'downloads', message: `Failed to persist download: ${message}` })
+          }
         }
 
+        if (cancelledIdsRef.current.has(id)) {
+          revokeDownloadUrl(id)
+          return
+        }
+
+        window.setTimeout(() => revokeDownloadUrl(id), 60_000)
         updateDownload(id, {
           status: 'completed',
           fileName: downloadName,
-          saveHref: objectUrl,
+          saveHref: undefined,
           receivedBytes: blob.size,
           totalBytes: blob.size || resolvedTotalBytes || null,
-          note: taggedDownload.note,
+          note: persistNote,
         })
       } catch (error: unknown) {
         if (error instanceof Error && error.name === 'AbortError') {
@@ -217,25 +228,49 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
       } finally {
         inFlightTrackKeysRef.current.delete(trackKey)
         delete downloadAbortControllersRef.current[id]
+        cancelledIdsRef.current.delete(id)
       }
     })()
-  }, [isAppleMobileOrTablet, updateDownload])
+  }, [isAppleMobileOrTablet, revokeDownloadUrl, updateDownload])
 
   const cancelDownload = useCallback((id: string) => {
+    cancelledIdsRef.current.add(id)
     const controller = downloadAbortControllersRef.current[id]
-    if (!controller) return
-
-    try { controller.abort() } catch {}
+    if (controller) {
+      try { controller.abort() } catch {}
+    }
     updateDownload(id, { status: 'cancelled' })
   }, [updateDownload])
 
   const saveDownloadAgain = useCallback((id: string) => {
     const download = downloads.find((entry) => entry.id === id)
-    if (!download?.saveHref || !download.fileName) return
-    triggerBrowserDownload(download.saveHref, download.fileName)
+    if (!download?.fileName) return
+
+    if (download.saveHref) {
+      triggerBrowserDownload(download.saveHref, download.fileName)
+      return
+    }
+
+    void getStoredDownloadBlob(id)
+      .then((blob) => {
+        if (!blob) return
+        const objectUrl = window.URL.createObjectURL(blob)
+        triggerBrowserDownload(objectUrl, download.fileName || 'download')
+        window.setTimeout(() => {
+          try { window.URL.revokeObjectURL(objectUrl) } catch {}
+        }, 60_000)
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        addDevLog({ kind: 'error', category: 'downloads', message: `Failed to reopen stored download: ${message}` })
+      })
   }, [downloads])
 
   const dismissDownload = useCallback((id: string) => {
+    if (downloadAbortControllersRef.current[id]) {
+      cancelledIdsRef.current.add(id)
+      try { downloadAbortControllersRef.current[id].abort() } catch {}
+    }
     revokeDownloadUrl(id)
     setDownloads((prev) => prev.filter((download) => download.id !== id))
     void deleteStoredDownload(id).catch((error: unknown) => {
@@ -245,6 +280,7 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
   }, [revokeDownloadUrl])
 
   const clearFinishedDownloads = useCallback(() => {
+    persistGenerationRef.current += 1
     setDownloads((prev) => {
       for (const download of prev) {
         if (download.status !== 'downloading') revokeDownloadUrl(download.id)

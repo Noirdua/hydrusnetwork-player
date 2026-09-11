@@ -283,6 +283,7 @@ export function needsVisibleMediaInfoBackfill(track?: Track) {
   if (!track.mimeType) return true
   const kind = getTrackArtworkKind(track)
   if (track.isVideo === undefined && kind !== 'image' && kind !== 'book' && kind !== 'application') return true
+  if (track.duration == null && (kind === 'audio' || kind === 'video')) return true
   return false
 }
 

@@ -22,7 +22,7 @@ function readBool(name: string, fallback = false) {
   /** Defaults from Vite-exposed env. Use /hydrus-proxy only when no host is configured. */
 export function getEnvHydrusDefaults(): EnvHydrusDefaults {
   const proxyEnabled = readBool('VITE_HYDRUS_PROXY_ENABLED')
-  const proxyTarget = readEnv('VITE_HYDRUS_PROXY_TARGET').replace(/\/+$/, '')
+  const proxyTarget = ''
   const configuredHost = readEnv('VITE_HYDRUS_HOST').replace(/\/+$/, '')
   const host = configuredHost || (proxyEnabled ? '/hydrus-proxy' : '')
 
@@ -35,7 +35,7 @@ export function getEnvHydrusDefaults(): EnvHydrusDefaults {
 
   return {
     host,
-    port: proxyEnabled || host.startsWith('/') ? undefined : (readEnv('VITE_HYDRUS_PORT') || undefined),
+    port: host.startsWith('/') ? undefined : (readEnv('VITE_HYDRUS_PORT') || undefined),
     apiKey: readEnv('VITE_HYDRUS_API_KEY').replace(/\s+/g, ''),
     ssl,
     forceApiKeyInQuery: readBool('VITE_HYDRUS_FORCE_API_KEY_IN_QUERY'),

@@ -2,6 +2,7 @@ import React from 'react'
 import { Box, Card, CardActionArea, CardContent, CardMedia, Chip, Grid, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TableSortLabel, Typography } from '@mui/material'
 import type { Track } from '../../types'
 import { isVideoMediaTrack } from '../../utils/externalPlayers'
+import { getTrackCacheKey } from '../../utils/trackMetadata'
 import {
   type AlbumEntry,
   type DisplayMode,
@@ -78,7 +79,7 @@ export function TrackGrid({
         const isVideoTrack = track ? isVideoMediaTrack(track) : false
 
         return (
-          <Box key={track?.id ?? idx} sx={{ cursor: track?.url ? 'pointer' : 'default' }} {...(track?.url ? getInteractionProps(track) : {})}>
+          <Box key={track ? (getTrackCacheKey(track.serverId, track.fileId) || track.id) : idx} sx={{ cursor: track?.url ? 'pointer' : 'default' }} {...(track?.url ? getInteractionProps(track) : {})}>
             <Box className="card-media">
               <Box component="img" src={getTrackArtworkSrc(track)} onError={(event: React.SyntheticEvent<HTMLImageElement>) => handleImageError(event, track)} alt={track?.title || '...'} loading="lazy" decoding="async" />
 

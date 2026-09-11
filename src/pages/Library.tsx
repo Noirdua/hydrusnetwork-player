@@ -135,7 +135,7 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
   }
 
   function applyQueryFilterUpdates(updates: Record<string, string | null | undefined>) {
-    onQueryChange(applyLibraryQueryFilters('', updates))
+    onQueryChange(applyLibraryQueryFilters(query, updates))
   }
 
   useEffect(() => {
@@ -344,7 +344,7 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
     onClick: () => { void handleTrackActivate(track) },
     onContextMenu: (event: React.MouseEvent) => {
       event.preventDefault()
-      longPressTriggeredRef.current = true
+      longPressTriggeredRef.current = false
       void openTrackDetails(track)
     },
     onTouchStart: () => {
@@ -366,8 +366,8 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
   const activePrimaryQuery = useMemo(() => getNamespacedQueryValue(query, namespacePresentation.primaryNamespace), [namespacePresentation.primaryNamespace, query])
   const queryMatchedSectionTracks = useMemo(() => sectionTracks.filter((track) => matchesTrackSearch(track, query, mediaSection)), [mediaSection, query, sectionTracks])
   const currentTrackResults = useMemo(() => filterTracksForView(queryMatchedSectionTracks, view, mediaSection), [mediaSection, queryMatchedSectionTracks, view])
-  const albums = useMemo(() => buildNamespaceEntriesFromTracks(sectionTracks, (track) => getTrackSecondaryValue(track)), [sectionTracks, trackNamespaceValues])
-  const artists = useMemo(() => buildNamespaceEntriesFromTracks(sectionTracks, (track) => getTrackPrimaryValue(track)), [sectionTracks, trackNamespaceValues])
+  const albums = useMemo(() => buildNamespaceEntriesFromTracks(queryMatchedSectionTracks, (track) => getTrackSecondaryValue(track)), [queryMatchedSectionTracks, trackNamespaceValues])
+  const artists = useMemo(() => buildNamespaceEntriesFromTracks(queryMatchedSectionTracks, (track) => getTrackPrimaryValue(track)), [queryMatchedSectionTracks, trackNamespaceValues])
   const baseTrackGroups = useMemo(() => {
     if (!hasArtistsView || activeSecondaryQuery || activePrimaryQuery) return []
     return buildTrackGroupsFromTracks(
@@ -412,7 +412,7 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
   const visibleResults = useMemo(() => sortedCurrentTrackResults.slice(0, visibleCount), [sortedCurrentTrackResults, visibleCount])
   const visibleAlbums = useMemo(() => sortedAlbums.slice(0, visibleCount), [sortedAlbums, visibleCount])
   const visibleArtists = useMemo(() => sortedArtists.slice(0, visibleCount), [sortedArtists, visibleCount])
-  const showToolbarSortControls = effectiveDisplayMode === 'table' && isCompactTableLayout
+  const showToolbarSortControls = viewLayout !== 'grid' || isCompactTableLayout
   const currentViewLabel = sectionConfig.views.find((item) => item.id === view)?.label || sectionConfig.label
   const itemCount = isTrackLikeView
     ? sortedCurrentTrackResults.length
@@ -420,8 +420,11 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
 
   useEffect(() => {
     onItemCountChange?.(itemCount)
-    return () => onItemCountChange?.(null)
   }, [itemCount, onItemCountChange])
+
+  useEffect(() => {
+    return () => onItemCountChange?.(null)
+  }, [onItemCountChange])
 
   const visibleRenderedTracks = useMemo(() => {
     if (viewLayout === 'nested-catalog') return visibleNestedCatalog.flatMap((group) => group.tracks)
@@ -482,12 +485,14 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
               mimeType: mediaInfo.mimeType ?? track.mimeType,
               isVideo: mediaInfo.isVideo ?? track.isVideo,
               hasThumbnail: mediaInfo.hasThumbnail ?? track.hasThumbnail ?? false,
+              duration: mediaInfo.durationMs ?? track.duration,
               tags: track.tags?.length ? track.tags : (mediaInfo.tags?.length ? mediaInfo.tags : track.tags),
             }
             if (
               nextTrack.mimeType === track.mimeType
               && nextTrack.isVideo === track.isVideo
               && nextTrack.hasThumbnail === track.hasThumbnail
+              && nextTrack.duration === track.duration
               && nextTrack.tags === track.tags
             ) continue
 
@@ -525,23 +530,27 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
 
     const sentinel = loadMoreSentinelRef.current
     if (!sentinel) return
+    let frame = 0
 
     const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) {
+      if (!entries.some((entry) => entry.isIntersecting)) return
+      if (frame) return
+      frame = window.requestAnimationFrame(() => {
+        frame = 0
         setVisibleCount((count) => count + RESULTS_PAGE_SIZE)
-      }
+      })
     }, { rootMargin: '600px 0px' })
 
     observer.observe(sentinel)
-    return () => observer.disconnect()
+    return () => {
+      observer.disconnect()
+      if (frame) window.cancelAnimationFrame(frame)
+    }
   }, [canLoadMore, loading, visibleCount])
 
   const openAlbumEntry = (name: string, options?: { primaryName?: string | null }) => {
     setView('tracks')
-    const preservesPrimary = mediaSection === 'video' || mediaSection === 'books'
-    const primaryName = preservesPrimary
-      ? options?.primaryName?.trim() || activePrimaryQuery
-      : null
+    const primaryName = options?.primaryName?.trim() || activePrimaryQuery
 
     applyQueryFilterUpdates({
       [namespacePresentation.secondaryNamespace]: name,
@@ -602,7 +611,7 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
 
       {hasServers && healthChecksComplete && onlineServerIds.length === 0 && (
         <Alert severity="info" sx={{ mt: 2 }}>
-          No Hydrus servers are currently online. Cached results stay hidden until a server passes a connection test.
+          No Hydrus servers are currently online. Cached libraries stay on this device and will reappear after a successful connection test.
         </Alert>
       )}
 

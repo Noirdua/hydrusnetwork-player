@@ -33,15 +33,27 @@ const MIME = {
 }
 
 function send(res, status, body, headers = {}) {
+  if (res.headersSent) {
+    res.destroy()
+    return
+  }
   res.writeHead(status, headers)
   res.end(body)
 }
 
 function serveStatic(req, res, urlPath) {
-  const safePath = decodeURIComponent(urlPath.split('?')[0] || '/')
-  let filePath = path.join(distDir, safePath === '/' ? 'index.html' : safePath)
+  let decodedPath
+  try {
+    decodedPath = decodeURIComponent((urlPath.split('?')[0] || '/'))
+  } catch {
+    send(res, 400, 'Bad path')
+    return
+  }
 
-  if (!filePath.startsWith(distDir)) {
+  const safePath = decodedPath === '/' ? 'index.html' : decodedPath
+  let filePath = path.resolve(distDir, `.${safePath.startsWith('/') ? safePath : `/${safePath}`}`)
+
+  if (filePath !== distDir && !filePath.startsWith(distDir + path.sep)) {
     send(res, 403, 'Forbidden')
     return
   }
@@ -58,6 +70,7 @@ function serveStatic(req, res, urlPath) {
   const ext = path.extname(filePath).toLowerCase()
   const type = MIME[ext] || 'application/octet-stream'
   const stream = fs.createReadStream(filePath)
+  stream.on('error', () => send(res, 404, 'Not found'))
   res.writeHead(200, { 'Content-Type': type })
   stream.pipe(res)
 }
@@ -104,6 +117,11 @@ function proxyHydrus(req, res, url) {
     },
   )
 
+  upstream.setTimeout(30000)
+  upstream.on('timeout', () => {
+    upstream.destroy()
+    send(res, 504, 'Hydrus proxy timed out')
+  })
   upstream.on('error', (error) => {
     send(res, 502, `Hydrus proxy failed: ${error.message}`)
   })
@@ -117,18 +135,22 @@ if (!fs.existsSync(distDir)) {
 }
 
 const server = http.createServer((req, res) => {
-  const url = req.url || '/'
-  if (url === '/hydrus-proxy' || url.startsWith('/hydrus-proxy/')) {
-    proxyHydrus(req, res, url)
-    return
+  try {
+    const url = req.url || '/'
+    if (url === '/hydrus-proxy' || url.startsWith('/hydrus-proxy/')) {
+      proxyHydrus(req, res, url)
+      return
+    }
+    if (url === '/readium' || url.startsWith('/readium/')) {
+      void handleReadiumRequest(req, res).catch((error) => {
+        send(res, 500, error instanceof Error ? error.message : String(error))
+      })
+      return
+    }
+    serveStatic(req, res, url)
+  } catch (error) {
+    send(res, 500, error instanceof Error ? error.message : 'Internal server error')
   }
-  if (url === '/readium' || url.startsWith('/readium/')) {
-    void handleReadiumRequest(req, res).catch((error) => {
-      send(res, 500, error instanceof Error ? error.message : String(error))
-    })
-    return
-  }
-  serveStatic(req, res, url)
 })
 
 server.listen(port, host, () => {

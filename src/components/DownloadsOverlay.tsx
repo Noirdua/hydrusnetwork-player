@@ -130,7 +130,7 @@ export default function DownloadsOverlay({ downloads, onCancel, onSaveAgain, onD
                     )
                     : (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25, flexShrink: 0 }}>
-                        {download.status === 'completed' && download.saveHref && (
+                        {download.status === 'completed' && (
                           <IconButton size="small" onClick={() => onSaveAgain(download.id)} aria-label="save download again" sx={{ width: 40, height: 40 }}>
                             <DownloadIcon fontSize="small" />
                           </IconButton>

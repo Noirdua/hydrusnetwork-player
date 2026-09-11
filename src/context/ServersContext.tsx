@@ -24,6 +24,7 @@ function buildConnectivitySignature(server: Pick<ServerConfig, 'host' | 'port' |
 
 // Re-test connectivity at most once per this window for a server that was recently verified.
 const CONNECTIVITY_RECHECK_TTL_MS = 30 * 60 * 1000
+const FAILURE_RETRY_MS = 8000
 
 function seedVerifiedSignatures(servers: Server[]): Record<string, string> {
   const seeded: Record<string, string> = {}
@@ -111,13 +112,28 @@ export function ServersProvider({ children }: { children: React.ReactNode }) {
     }
   })
   const connectivityRequestsRef = useRef<Record<string, Promise<ConnectivityResult>>>({})
+  const serversRef = useRef(servers)
+  const failureRetryTimeoutsRef = useRef<Record<string, number>>({})
+  serversRef.current = servers
 
   useEffect(() => saveServers(servers), [servers])
 
+  useEffect(() => {
+    return () => {
+      for (const timeoutId of Object.values(failureRetryTimeoutsRef.current)) {
+        window.clearTimeout(timeoutId)
+      }
+    }
+  }, [])
+
   const setActiveServerId = useCallback((id: string | null) => {
     setActiveServerIdState(id)
-    if (id) localStorage.setItem(ACTIVE_KEY, id)
-    else localStorage.removeItem(ACTIVE_KEY)
+    try {
+      if (id) localStorage.setItem(ACTIVE_KEY, id)
+      else localStorage.removeItem(ACTIVE_KEY)
+    } catch {
+      // ignore private-mode / quota errors
+    }
   }, [])
 
   const addServer = useCallback((s: Omit<Server, 'id' | 'lastTest'>) => {
@@ -151,11 +167,30 @@ export function ServersProvider({ children }: { children: React.ReactNode }) {
     const request = (async () => {
       const client = getHydrusClient(server)
       const res = await client.testConnectivity()
+      const current = serversRef.current.find((candidate) => candidate.id === server.id)
+      if (!current || buildConnectivitySignature(current) !== signature) return res
+
       updateServer(server.id, { lastTest: { ...res, timestamp: Date.now() } })
       setVerifiedConnectivitySignatures((prev) => {
         if (prev[server.id] === signature) return prev
         return { ...prev, [server.id]: signature }
       })
+
+      if (!res.ok && typeof window !== 'undefined') {
+        if (failureRetryTimeoutsRef.current[server.id]) {
+          window.clearTimeout(failureRetryTimeoutsRef.current[server.id])
+        }
+        failureRetryTimeoutsRef.current[server.id] = window.setTimeout(() => {
+          delete failureRetryTimeoutsRef.current[server.id]
+          setVerifiedConnectivitySignatures((prev) => {
+            if (prev[server.id] !== signature) return prev
+            const next = { ...prev }
+            delete next[server.id]
+            return next
+          })
+        }, FAILURE_RETRY_MS)
+      }
+
       return res
     })()
 

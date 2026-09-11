@@ -47,7 +47,6 @@ export default defineConfig(({ mode }) => {
     // Lets the client know the build-time proxy is configured so Settings can default to /hydrus-proxy.
     define: {
       'import.meta.env.VITE_HYDRUS_PROXY_ENABLED': JSON.stringify(proxyEnabled ? 'true' : 'false'),
-      'import.meta.env.VITE_HYDRUS_PROXY_TARGET': JSON.stringify(proxyTarget),
     },
     server: {
       port: 5173,

@@ -99,14 +99,7 @@ function endpointIsHttpHydrus(endpoint: string, ssl: boolean) {
 }
 
 function endpointMatchesConfiguredProxy(endpoint: string, ssl: boolean) {
-  const resolved = resolveFormEndpointUrl(endpoint, ssl)
-  const proxyTarget = getEnvHydrusDefaults().proxyTarget
-  if (!resolved || !proxyTarget) return false
-  try {
-    return new URL(resolved).origin === new URL(proxyTarget).origin
-  } catch {
-    return false
-  }
+  return getEnvHydrusDefaults().proxyEnabled && endpointIsHttpHydrus(endpoint, ssl)
 }
 
 function validateServerForm(form: ServerForm) {
@@ -323,7 +316,7 @@ export default function SettingsPage({ onClose, preferences, onSavePreferences }
 
       updateServer(server.id, { syncSummary: summary })
 
-      if (summary.message) {
+      if (summary.message?.startsWith('Sync failed')) {
         setLastTest(summary.message)
         await refreshCacheStats(result.cacheKey)
         return
@@ -337,10 +330,11 @@ export default function SettingsPage({ onClose, preferences, onSavePreferences }
       } catch {
         catalogCount = 0
       }
+      const truncationNote = summary.message?.startsWith('Sync truncated') ? ` ${summary.message}` : ''
       const completionMessage = addedCount === 0 && removedCount === 0
-        ? `Sync complete. No file changes. ${summary.total} cached items. ${catalogCount} EPUBs sent to Thorium.`
-        : `Sync complete. Added ${addedCount} files, removed ${removedCount} files. ${catalogCount} EPUBs sent to Thorium.`
-      setLastTest(`Sync complete. ${summary.total} cached items. ${catalogCount} EPUBs sent to Thorium.`)
+        ? `Sync complete. No file changes. ${summary.total} cached items. ${catalogCount} EPUBs sent to Thorium.${truncationNote}`
+        : `Sync complete. Added ${addedCount} files, removed ${removedCount} files. ${catalogCount} EPUBs sent to Thorium.${truncationNote}`
+      setLastTest(`Sync complete. ${summary.total} cached items. ${catalogCount} EPUBs sent to Thorium.${truncationNote}`)
       setSyncCompletionNotices((current) => ({ ...current, [server.id]: completionMessage }))
       await refreshCacheStats(result.cacheKey)
       if (syncNoticeTimeoutsRef.current[server.id]) {
