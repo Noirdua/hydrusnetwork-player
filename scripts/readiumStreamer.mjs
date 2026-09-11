@@ -15,6 +15,29 @@ const CACHE_LIMIT = 8
 const publicationCache = new Map()
 const sourceAliases = new Map()
 const SOURCE_ALIAS_LIMIT = 400
+const SOURCES_FILE = path.join(STREAMER_ROOT, '.readium-sources.json')
+
+function loadSourceAliases() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(SOURCES_FILE, 'utf8'))
+    if (!parsed || typeof parsed !== 'object') return
+    for (const [id, url] of Object.entries(parsed)) {
+      if (typeof id === 'string' && typeof url === 'string') sourceAliases.set(id, url)
+    }
+  } catch {
+    // ignore missing or invalid alias cache
+  }
+}
+
+function persistSourceAliases() {
+  try {
+    fs.writeFileSync(SOURCES_FILE, JSON.stringify(Object.fromEntries(sourceAliases)))
+  } catch {
+    // ignore alias persistence failures
+  }
+}
+
+loadSourceAliases()
 
 const MIME_BY_EXT = {
   xhtml: 'text/html',
@@ -176,12 +199,23 @@ function rememberSourceUrl(sourceUrl) {
     const oldest = sourceAliases.keys().next().value
     if (oldest) sourceAliases.delete(oldest)
   }
+  persistSourceAliases()
   return id
 }
 
 function resolveSourceUrl(encodedSource) {
   if (sourceAliases.has(encodedSource)) return sourceAliases.get(encodedSource)
   return decodeBase64Url(encodedSource)
+}
+
+function isPrivateOrLocalHostname(hostname) {
+  const host = String(hostname || '').replace(/^\[|\]$/g, '').toLowerCase()
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true
+  if (host.endsWith('.local') || host.endsWith('.lan')) return true
+  if (/^10(?:\.\d+){3}$/.test(host)) return true
+  if (/^192\.168(?:\.\d+){2}$/.test(host)) return true
+  if (/^172\.(1[6-9]|2\d|3[0-1])(?:\.\d+){2}$/.test(host)) return true
+  return false
 }
 
 function isAllowedSourceUrl(raw) {
@@ -192,7 +226,16 @@ function isAllowedSourceUrl(raw) {
     return false
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
-  return parsed.pathname.includes('/get_files/file')
+  if (!parsed.pathname.includes('/get_files/file')) return false
+  if (parsed.pathname.includes('/hydrus-proxy/')) return true
+  if (isPrivateOrLocalHostname(parsed.hostname)) return true
+  try {
+    const target = hydrusConfig().host
+    if (target) return new URL(target).hostname === parsed.hostname
+  } catch {
+    return false
+  }
+  return false
 }
 
 function parseContainerRootPath(xml) {

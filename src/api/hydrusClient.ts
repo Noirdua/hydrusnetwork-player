@@ -58,17 +58,15 @@ function createAbortError() {
   return error
 }
 
-function readViteEnv(name: string) {
-  const value = (import.meta.env as Record<string, string | boolean | undefined>)[name]
-  return typeof value === 'string' ? value.trim() : ''
+function isHydrusProxyEnabled() {
+  const value = String(import.meta.env.VITE_HYDRUS_PROXY_ENABLED || '').trim().toLowerCase()
+  return value === '1' || value === 'true' || value === 'yes'
 }
 
 function rewriteHttpHydrusToSameOriginProxy(absoluteUrl: string) {
   if (typeof window === 'undefined' || window.location?.protocol !== 'https:') return absoluteUrl
   if (!/^http:\/\//i.test(absoluteUrl)) return absoluteUrl
-
-  const proxyEnabled = readViteEnv('VITE_HYDRUS_PROXY_ENABLED').toLowerCase()
-  if (proxyEnabled !== 'true' && proxyEnabled !== '1' && proxyEnabled !== 'yes') return absoluteUrl
+  if (!isHydrusProxyEnabled()) return absoluteUrl
 
   return `${window.location.origin}/hydrus-proxy`
 }
@@ -272,14 +270,8 @@ export class HydrusClient {
     const headers = this.getHeaders(!(this.cfg.forceApiKeyInQuery ?? false))
     const res = await this.fetchWithAuthRetry(url, { method: 'GET', headers, signal })
 
-    if (res.status === 404) {
-      console.warn('[HydrusClient] getFilesMetadata 404', { url, status: res.status, fileCount: fileIds.length })
-      return []
-    }
-
     if (!res.ok) {
-      console.warn('[HydrusClient] getFilesMetadata Response Error', { status: res.status, statusText: res.statusText, fileCount: fileIds.length })
-      return []
+      throw new Error(`Metadata request failed (${res.status})`)
     }
 
     const data = await res.json().catch(() => null)
@@ -538,11 +530,13 @@ export class HydrusClient {
           }
 
           for (const fid of batch) {
-            out[fid] = this.metadataFromPayload(entryMap.get(fid), fid)
+            const entry = entryMap.get(fid)
+            if (!entry) continue
+            out[fid] = this.metadataFromPayload(entry, fid)
           }
         } catch (error: unknown) {
           if (error instanceof Error && error.name === 'AbortError') throw error
-          for (const fid of batch) out[fid] = { tags: [] }
+          throw error
         }
       }
     })

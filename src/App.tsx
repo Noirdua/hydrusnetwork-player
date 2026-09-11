@@ -194,7 +194,11 @@ function App() {
             />
           ) : null}
 
-          <MediaPlayerOverlay track={playingTrack} onClose={handleClosePlayer} />
+          <MediaPlayerOverlay
+            track={playingTrack}
+            onClose={handleClosePlayer}
+            lifted={activePage !== 'downloads' && activeDownloads.length > 0}
+          />
         </Box>
         </ErrorBoundary>
       </ThemeProvider>

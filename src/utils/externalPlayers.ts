@@ -23,8 +23,9 @@ export function isVideoMediaTrack(track: Track) {
 export function isPlayableMediaTrack(track: Track) {
   const mimeType = normalizeMimeForPlaybackCheck(track.mimeType)
   if (isVideoMediaTrack(track)) return true
-  if (mimeType.startsWith('audio/')) return true
+  if (mimeType.startsWith('audio/') || track.isVideo === false) return true
   if (AUDIO_URL_PATTERN.test(track.url)) return true
+  if (/\/get_files\/file(?:\?|$)/i.test(track.url)) return true
   return false
 }
 

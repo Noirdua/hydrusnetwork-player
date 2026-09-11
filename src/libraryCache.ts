@@ -127,5 +127,4 @@ export async function saveLibraryCache(cacheKey: string, tracks: Track[]) {
   }
 
   await withStore(DB_CONFIG, 'readwrite', (store) => store.put(record))
-  await pruneLibraryCache(cacheKey)
 }

@@ -22,7 +22,15 @@ function openDatabase(config: DatabaseConfig) {
       }
     }
 
-    request.onsuccess = () => resolve(request.result)
+    request.onsuccess = () => {
+      const database = request.result
+      database.onclose = () => { databaseCache.delete(cacheKey) }
+      database.onversionchange = () => {
+        database.close()
+        databaseCache.delete(cacheKey)
+      }
+      resolve(database)
+    }
     request.onerror = () => {
       databaseCache.delete(cacheKey)
       reject(request.error ?? new Error(`Failed to open database: ${config.name}`))

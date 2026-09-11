@@ -98,8 +98,9 @@ function endpointIsHttpHydrus(endpoint: string, ssl: boolean) {
   return !!resolved && /^http:\/\//i.test(resolved)
 }
 
-function endpointMatchesConfiguredProxy(endpoint: string, ssl: boolean) {
-  return getEnvHydrusDefaults().proxyEnabled && endpointIsHttpHydrus(endpoint, ssl)
+function endpointMatchesConfiguredProxy(endpoint: string, _ssl: boolean) {
+  const trimmed = (endpoint || '').trim()
+  return trimmed === '/hydrus-proxy' || trimmed.startsWith('/hydrus-proxy/')
 }
 
 function validateServerForm(form: ServerForm) {
@@ -369,6 +370,14 @@ export default function SettingsPage({ onClose, preferences, onSavePreferences }
   }, [currentCacheKey])
 
   const handleSavePreferences = () => {
+    const nextLayouts = { ...preferences.libraryViewLayouts }
+    if (audioTracksLayoutKey in preferences.libraryViewLayouts || draftAudioTracksLayout !== 'nested-catalog') {
+      nextLayouts[audioTracksLayoutKey] = draftAudioTracksLayout
+    }
+    if (videoEpisodeLayoutKey in preferences.libraryViewLayouts || draftVideoEpisodeLayout !== 'nested-catalog') {
+      nextLayouts[videoEpisodeLayoutKey] = draftVideoEpisodeLayout
+    }
+
     onSavePreferences({
       appTheme: draft.appTheme,
       libraryDisplayMode: draft.libraryDisplayMode,
@@ -376,11 +385,7 @@ export default function SettingsPage({ onClose, preferences, onSavePreferences }
       devOverlayEnabled: draft.devOverlayEnabled,
       showSidebarLogo: draft.showSidebarLogo,
       thoriumWebUrl: (draft.thoriumWebUrl || '').trim(),
-      libraryViewLayouts: {
-        ...preferences.libraryViewLayouts,
-        [audioTracksLayoutKey]: draftAudioTracksLayout,
-        [videoEpisodeLayoutKey]: draftVideoEpisodeLayout,
-      },
+      libraryViewLayouts: nextLayouts,
     })
   }
 
@@ -607,7 +612,8 @@ export default function SettingsPage({ onClose, preferences, onSavePreferences }
                     <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', width: '100%', mt: 1 }}>
                       {s.lastTest && s.lastTest.message && <Chip label={s.lastTest.message} size="small" />}
                       {typeof s.syncSummary?.total === 'number' && <Chip label={`Cached: ${s.syncSummary.total} items`} size="small" color="primary" variant="outlined" />}
-                      {s.syncSummary?.message && <Chip label={s.syncSummary.message} size="small" color="error" variant="outlined" />}
+                      {s.syncSummary?.message?.startsWith('Sync failed') && <Chip label={s.syncSummary.message} size="small" color="error" variant="outlined" />}
+                      {s.syncSummary?.message?.startsWith('Sync truncated') && <Chip label={s.syncSummary.message} size="small" color="warning" variant="outlined" />}
                       {s.syncSummary?.counts && Object.entries(s.syncSummary.counts).map(([section, count]) => (
                         <Chip key={`${s.id}-${section}`} label={`${section}: ${count}`} size="small" variant="outlined" />
                       ))}

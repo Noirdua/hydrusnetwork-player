@@ -76,6 +76,8 @@ export function useLibraryCache({
   const applyVisibleResults = useCallback(() => {
     setResults(filterVisibleTracks(Object.values(allTracksRef.current), onlineServerIds, activeServerId))
   }, [activeServerId, onlineServerIds])
+  const applyVisibleResultsRef = useRef(applyVisibleResults)
+  applyVisibleResultsRef.current = applyVisibleResults
 
   const cacheTracks = useCallback((tracks: Track[]) => {
     for (const track of tracks) {
@@ -132,7 +134,7 @@ export function useLibraryCache({
         }
 
         if (!cancelled) {
-          applyVisibleResults()
+          applyVisibleResultsRef.current()
           setError(null)
         }
       } catch {
@@ -155,8 +157,10 @@ export function useLibraryCache({
         return
       }
 
-      if (detail.phase === 'failed' && detail.error) {
-        setError(detail.error)
+      if (detail.phase === 'failed') {
+        if (detail.error) setError(detail.error)
+        setLoading(false)
+        return
       }
 
       void restoreCachedLibrary()
@@ -173,7 +177,7 @@ export function useLibraryCache({
         window.removeEventListener(LIBRARY_CACHE_SYNC_EVENT, handleCacheSyncEvent as EventListener)
       }
     }
-  }, [applyVisibleResults, hasServers, healthChecksComplete, serverCacheKey, serversUrlSignature])
+  }, [hasServers, healthChecksComplete, serverCacheKey, serversUrlSignature])
 
   useEffect(() => {
     if (!healthChecksComplete) return

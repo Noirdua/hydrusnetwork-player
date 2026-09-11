@@ -176,18 +176,18 @@ export function ServersProvider({ children }: { children: React.ReactNode }) {
         return { ...prev, [server.id]: signature }
       })
 
+      if (failureRetryTimeoutsRef.current[server.id]) {
+        window.clearTimeout(failureRetryTimeoutsRef.current[server.id])
+        delete failureRetryTimeoutsRef.current[server.id]
+      }
+
       if (!res.ok && typeof window !== 'undefined') {
-        if (failureRetryTimeoutsRef.current[server.id]) {
-          window.clearTimeout(failureRetryTimeoutsRef.current[server.id])
-        }
         failureRetryTimeoutsRef.current[server.id] = window.setTimeout(() => {
           delete failureRetryTimeoutsRef.current[server.id]
-          setVerifiedConnectivitySignatures((prev) => {
-            if (prev[server.id] !== signature) return prev
-            const next = { ...prev }
-            delete next[server.id]
-            return next
-          })
+          const latest = serversRef.current.find((candidate) => candidate.id === server.id)
+          if (!latest || buildConnectivitySignature(latest) !== signature || latest.lastTest?.ok) return
+          delete connectivityRequestsRef.current[requestKey]
+          void runPersistedConnectivityTest(latest)
         }, FAILURE_RETRY_MS)
       }
 

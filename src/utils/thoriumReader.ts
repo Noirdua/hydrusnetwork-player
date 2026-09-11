@@ -40,9 +40,15 @@ export function isThoriumReadableTrack(track: Pick<Track, 'mimeType' | 'url'>) {
   return getTrackExtension(track as Track) === 'epub'
 }
 
+export function openExternalHref(href: string) {
+  const openedWindow = window.open(href, '_blank', 'noreferrer')
+  if (openedWindow) {
+    try { openedWindow.opener = null } catch {}
+  }
+}
+
 export function openInBrowserReader(track: Track) {
-  const openedWindow = window.open(track.url, '_blank', 'noopener,noreferrer')
-  if (!openedWindow) window.location.href = track.url
+  openExternalHref(track.url)
 }
 
 export async function registerThoriumSource(fileUrl: string, origin = window.location.origin.replace(/\/+$/, '')) {
@@ -57,20 +63,30 @@ export async function registerThoriumSource(fileUrl: string, origin = window.loc
   return data.id
 }
 
-export async function buildThoriumReaderHref(fileUrl: string, origin = window.location.origin) {
+export function buildThoriumReaderHref(encodedSource: string, origin = window.location.origin) {
   const base = origin.replace(/\/+$/, '')
-  let encodedSource = encodeUrlSafeBase64(fileUrl)
-  try {
-    encodedSource = await registerThoriumSource(fileUrl, base)
-  } catch {
-    // Fall back to the encoded file URL if the streamer is unavailable.
-  }
   const manifestUrl = `${base}/readium/webpub/${encodedSource}/manifest.json`
   return `${getThoriumWebUrl()}/read/manifest/${encodeURIComponent(manifestUrl)}`
 }
 
 export async function openInThoriumReader(track: Track) {
-  const href = await buildThoriumReaderHref(track.url)
-  const openedWindow = window.open(href, '_blank', 'noopener,noreferrer')
-  if (!openedWindow) window.location.href = href
+  const placeholder = window.open('about:blank', '_blank')
+  if (placeholder) {
+    try { placeholder.opener = null } catch {}
+  }
+
+  const origin = window.location.origin.replace(/\/+$/, '')
+  let encodedSource = encodeUrlSafeBase64(track.url)
+  try {
+    encodedSource = await registerThoriumSource(track.url, origin)
+  } catch {
+    // Fall back to the encoded file URL if the streamer is unavailable.
+  }
+
+  const href = buildThoriumReaderHref(encodedSource, origin)
+  if (placeholder) {
+    placeholder.location.href = href
+    return
+  }
+  openExternalHref(href)
 }

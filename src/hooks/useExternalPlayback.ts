@@ -6,7 +6,7 @@ import {
   getPreferredExternalPlayer,
   isPlayableMediaTrack,
 } from '../utils/externalPlayers'
-import { isPdfTrack, isThoriumReadableTrack, openInBrowserReader, openInThoriumReader } from '../utils/thoriumReader'
+import { isPdfTrack, isThoriumReadableTrack, openExternalHref, openInBrowserReader, openInThoriumReader } from '../utils/thoriumReader'
 
 type MediaInfo = {
   mimeType?: string
@@ -75,10 +75,7 @@ export function useExternalPlayback({
           href: track.url,
         }
       })
-      const openedWindow = window.open(track.url, '_blank', 'noopener,noreferrer')
-      if (!openedWindow) {
-        window.location.href = track.url
-      }
+      openExternalHref(track.url)
       return
     }
 
@@ -108,6 +105,7 @@ export function useExternalPlayback({
 
       const mimeType = res.headers.get('content-type') || undefined
       const isVideo = !!mimeType && (mimeType.startsWith('video/') || mimeType.includes('mpegurl'))
+      if (!mimeType) return {}
       const mediaInfo = { mimeType, isVideo: isVideo || undefined }
       mimeCacheRef.current[track.url] = mediaInfo
       return mediaInfo
@@ -118,7 +116,7 @@ export function useExternalPlayback({
   }, [])
 
   const resolveMediaInfo = useCallback(async (track: Track, signal?: AbortSignal): Promise<MediaInfo> => {
-    if (track.mimeType || track.isVideo !== undefined) {
+    if (track.mimeType || track.isVideo === true) {
       return { mimeType: track.mimeType, isVideo: track.isVideo }
     }
 
@@ -155,7 +153,7 @@ export function useExternalPlayback({
     const controller = new AbortController()
     playRequestAbortRef.current = controller
 
-    const cachedInfo = track.mimeType || track.isVideo !== undefined
+    const cachedInfo = track.mimeType || track.isVideo === true
       ? { mimeType: track.mimeType, isVideo: track.isVideo }
       : mimeCacheRef.current[track.url] || (VIDEO_URL_PATTERN.test(track.url) ? { isVideo: true } : undefined)
 

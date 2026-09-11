@@ -10,3 +10,4 @@ dist/
 .kilo
 /.kilo/
 .readium-catalog.json
+.readium-sources.json

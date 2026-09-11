@@ -1,5 +1,5 @@
 import { getHydrusClient, extractTitleFromTags, type ServerConfig } from './api/hydrusClient'
-import { buildLibraryCacheKey, loadLibraryCache, saveLibraryCache } from './libraryCache'
+import { buildLibraryCacheKey, loadLibraryCache, pruneLibraryCache, saveLibraryCache } from './libraryCache'
 import { SECTION_CONFIG } from './pages/library/libraryConfig'
 import { getTrackCacheKey } from './utils/trackMetadata'
 import { extractNamespaceValue } from './utils/extractNamespaceValue'
@@ -107,7 +107,8 @@ export async function syncLibraryCache(servers: LibrarySyncServer[], options: { 
           let bookCount = 0
 
           for (const fileId of ids) {
-            const metadata = metadataMap[fileId] || {}
+            const metadata = metadataMap[fileId]
+            if (!metadata) continue
             const tags = metadata.tags || []
             const key = getTrackCacheKey(server.id, fileId)
             if (!key) continue
@@ -145,9 +146,20 @@ export async function syncLibraryCache(servers: LibrarySyncServer[], options: { 
           if (bookCount > 0) counts.books = (counts.books ?? 0) + bookCount
         }
 
+        if (truncationWarnings.length) {
+          for (const track of previousTracks) {
+            const key = getTrackCacheKey(track.serverId, track.fileId)
+            if (!key || currentServerTrackKeys.has(key)) continue
+            currentServerTrackKeys.add(key)
+            mergedTrackMap[key] = track
+          }
+        }
+
         const total = Object.values(counts).reduce((sum, value) => sum + (value || 0), 0)
         addedCounts[server.id] = Array.from(currentServerTrackKeys).filter((key) => !previousServerTrackKeys.has(key)).length
-        removedCounts[server.id] = Array.from(previousServerTrackKeys).filter((key) => !currentServerTrackKeys.has(key)).length
+        removedCounts[server.id] = truncationWarnings.length
+          ? 0
+          : Array.from(previousServerTrackKeys).filter((key) => !currentServerTrackKeys.has(key)).length
         summaries[server.id] = {
           updatedAt: Date.now(),
           total,
@@ -175,6 +187,7 @@ export async function syncLibraryCache(servers: LibrarySyncServer[], options: { 
 
     const mergedTracks = Object.values(mergedTrackMap)
     await saveLibraryCache(cacheKey, mergedTracks)
+    await pruneLibraryCache(cacheKey)
     void publishHydrusEpubCatalogFromTracks(mergedTracks).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       console.warn('[librarySync] Thorium EPUB catalog publish failed:', message)

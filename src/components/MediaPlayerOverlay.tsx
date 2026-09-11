@@ -8,10 +8,12 @@ import FullscreenIcon from '@mui/icons-material/Fullscreen'
 import type { Track } from '../types'
 import { getTrackArtworkSrc } from '../pages/library/libraryHelpers'
 import { isVideoMediaTrack } from '../utils/externalPlayers'
+import { useOverlayZoomLock } from '../hooks/useOverlayZoomLock'
 
 type Props = {
   track: Track | null
   onClose: () => void
+  lifted?: boolean
 }
 
 function formatTime(seconds: number) {
@@ -24,7 +26,7 @@ function formatTime(seconds: number) {
   return `${minutes}:${String(secs).padStart(2, '0')}`
 }
 
-export default function MediaPlayerOverlay({ track, onClose }: Props) {
+export default function MediaPlayerOverlay({ track, onClose, lifted = false }: Props) {
   const mediaRef = useRef<HTMLMediaElement | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -39,6 +41,7 @@ export default function MediaPlayerOverlay({ track, onClose }: Props) {
   const artwork = track ? getTrackArtworkSrc(track) : undefined
   const seekable = Number.isFinite(duration) && duration > 0
   const progress = seekable ? (currentTime / duration) * 100 : 0
+  useOverlayZoomLock(expanded)
 
   useEffect(() => {
     setExpanded(false)
@@ -75,6 +78,9 @@ export default function MediaPlayerOverlay({ track, onClose }: Props) {
       media.removeEventListener('play', onPlay)
       media.removeEventListener('pause', onPause)
       media.removeEventListener('ended', onEnded)
+      media.pause()
+      media.removeAttribute('src')
+      media.load()
     }
   }, [track?.url, video])
 
@@ -95,9 +101,13 @@ export default function MediaPlayerOverlay({ track, onClose }: Props) {
   }, [])
 
   const handleFullscreen = useCallback(() => {
-    const media = mediaRef.current as HTMLVideoElement | null
-    if (!media || typeof media.requestFullscreen !== 'function') return
-    void media.requestFullscreen()
+    const media = mediaRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null
+    if (!media) return
+    if (typeof media.requestFullscreen === 'function') {
+      void media.requestFullscreen()
+      return
+    }
+    media.webkitEnterFullscreen?.()
   }, [])
 
   if (!track) return null
@@ -112,7 +122,7 @@ export default function MediaPlayerOverlay({ track, onClose }: Props) {
             position: 'fixed',
             left: 8,
             right: 8,
-            bottom: 'max(8px, env(safe-area-inset-bottom))',
+            bottom: lifted ? 'max(96px, calc(env(safe-area-inset-bottom) + 88px))' : 'max(8px, env(safe-area-inset-bottom))',
             zIndex: (theme) => theme.zIndex.appBar,
             borderRadius: 2.5,
             border: '1px solid rgba(255,255,255,0.08)',
@@ -195,7 +205,7 @@ export default function MediaPlayerOverlay({ track, onClose }: Props) {
             <Box
               component="video"
               key={track.url}
-              ref={(node: HTMLVideoElement | null) => { mediaRef.current = node }}
+              ref={mediaRef as React.RefObject<HTMLVideoElement>}
               src={track.url}
               autoPlay
               playsInline
@@ -214,7 +224,7 @@ export default function MediaPlayerOverlay({ track, onClose }: Props) {
           <Box
             component="audio"
             key={track.url}
-            ref={(node: HTMLAudioElement | null) => { mediaRef.current = node }}
+              ref={mediaRef as React.RefObject<HTMLAudioElement>}
             src={track.url}
             autoPlay
           />

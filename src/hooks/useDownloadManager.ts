@@ -18,7 +18,7 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
   const downloadUrlsRef = useRef<Record<string, string>>({})
   const inFlightTrackKeysRef = useRef(new Set<string>())
   const cancelledIdsRef = useRef(new Set<string>())
-  const persistGenerationRef = useRef(0)
+  const dismissedIdsRef = useRef(new Set<string>())
 
   useEffect(() => {
     let cancelled = false
@@ -103,8 +103,6 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
 
     const controller = new AbortController()
     downloadAbortControllersRef.current[id] = controller
-    const persistGeneration = persistGenerationRef.current
-
     void (async () => {
       try {
         const response = await fetch(track.url, { method: 'GET', mode: 'cors', signal: controller.signal })
@@ -180,7 +178,8 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
         triggerBrowserDownload(objectUrl, downloadName)
 
         let persistNote = taggedDownload.note
-        if (persistGeneration === persistGenerationRef.current && !cancelledIdsRef.current.has(id)) {
+        let persisted = false
+        if (!cancelledIdsRef.current.has(id) && !dismissedIdsRef.current.has(id)) {
           try {
             await saveStoredDownload({
               id,
@@ -193,6 +192,7 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
               blob,
               savedAt: Date.now(),
             })
+            persisted = true
           } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error)
             persistNote = persistNote ? `${persistNote} • Not stored for later` : 'Saved this session only (storage failed)'
@@ -200,16 +200,21 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
           }
         }
 
-        if (cancelledIdsRef.current.has(id)) {
+        if (cancelledIdsRef.current.has(id) || dismissedIdsRef.current.has(id)) {
+          if (persisted) {
+            void deleteStoredDownload(id).catch(() => undefined)
+          }
           revokeDownloadUrl(id)
           return
         }
 
-        window.setTimeout(() => revokeDownloadUrl(id), 60_000)
+        window.setTimeout(() => {
+          if (downloadUrlsRef.current[id] === objectUrl) revokeDownloadUrl(id)
+        }, 60_000)
         updateDownload(id, {
           status: 'completed',
           fileName: downloadName,
-          saveHref: undefined,
+          saveHref: objectUrl,
           receivedBytes: blob.size,
           totalBytes: blob.size || resolvedTotalBytes || null,
           note: persistNote,
@@ -246,8 +251,9 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
     const download = downloads.find((entry) => entry.id === id)
     if (!download?.fileName) return
 
-    if (download.saveHref) {
-      triggerBrowserDownload(download.saveHref, download.fileName)
+    const liveHref = download.saveHref || downloadUrlsRef.current[id]
+    if (liveHref) {
+      triggerBrowserDownload(liveHref, download.fileName)
       return
     }
 
@@ -267,8 +273,9 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
   }, [downloads])
 
   const dismissDownload = useCallback((id: string) => {
+    dismissedIdsRef.current.add(id)
+    cancelledIdsRef.current.add(id)
     if (downloadAbortControllersRef.current[id]) {
-      cancelledIdsRef.current.add(id)
       try { downloadAbortControllersRef.current[id].abort() } catch {}
     }
     revokeDownloadUrl(id)
@@ -280,10 +287,12 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
   }, [revokeDownloadUrl])
 
   const clearFinishedDownloads = useCallback(() => {
-    persistGenerationRef.current += 1
     setDownloads((prev) => {
       for (const download of prev) {
-        if (download.status !== 'downloading') revokeDownloadUrl(download.id)
+        if (download.status === 'downloading') continue
+        dismissedIdsRef.current.add(download.id)
+        cancelledIdsRef.current.add(download.id)
+        revokeDownloadUrl(download.id)
       }
 
       return prev.filter((download) => download.status === 'downloading')

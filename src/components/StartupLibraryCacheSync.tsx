@@ -6,8 +6,8 @@ import { buildLibraryCacheKey } from '../libraryCache'
 import { publishHydrusEpubCatalogFromCache } from '../utils/hydrusEpubCatalog'
 
 const LAST_AUTO_SYNC_KEY = 'api_media_player_last_auto_sync_v1'
-// Skip the background full sync within this window to avoid hammering Hydrus on every page load.
 const AUTO_SYNC_TTL_MS = 6 * 60 * 60 * 1000
+const SYNC_RETRY_MS = 15000
 
 function readLastAutoSync(): { signature: string; at: number } | null {
   try {
@@ -31,11 +31,12 @@ function writeLastAutoSync(signature: string) {
   }
 }
 
-// Warms the shared client-side library cache in the background once server health checks complete,
-// but throttles re-syncs so a simple reload doesn't re-fetch the entire library.
 export default function StartupLibraryCacheSync() {
   const { servers, onlineServerIds, healthChecksComplete, updateServer } = useServers()
   const lastSyncSignatureRef = useRef<string | null>(null)
+  const pendingSignatureRef = useRef<string | null>(null)
+  const inFlightRef = useRef(false)
+  const retryTimeoutRef = useRef<number | null>(null)
   const syncSignature = useMemo(() => servers
     .filter((server) => onlineServerIds.includes(server.id))
     .map((server) => [
@@ -55,45 +56,68 @@ export default function StartupLibraryCacheSync() {
   onlineServerIdsRef.current = onlineServerIds
   updateServerRef.current = updateServer
 
-  const inFlightRef = useRef(false)
-
   useEffect(() => {
-    if (!healthChecksComplete || !serversRef.current.length || !syncSignature || lastSyncSignatureRef.current === syncSignature || inFlightRef.current) return
+    const startSync = (signature: string) => {
+      if (!signature || lastSyncSignatureRef.current === signature || inFlightRef.current) return
 
-    const currentServers = serversRef.current
-    const targetServerIds = onlineServerIdsRef.current.filter((serverId) => currentServers.some((server) => server.id === serverId))
+      const currentServers = serversRef.current
+      const targetServerIds = onlineServerIdsRef.current.filter((serverId) => currentServers.some((server) => server.id === serverId))
+      if (targetServerIds.length === 0) return
 
-    if (targetServerIds.length === 0) return
+      void publishHydrusEpubCatalogFromCache(buildLibraryCacheKey(currentServers)).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        addDevLog({ kind: 'error', category: 'thorium', message: `Background EPUB catalog publish failed: ${message}` })
+      })
 
-    void publishHydrusEpubCatalogFromCache(buildLibraryCacheKey(currentServers)).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error)
-      addDevLog({ kind: 'error', category: 'thorium', message: `Background EPUB catalog publish failed: ${message}` })
-    })
+      const lastSync = readLastAutoSync()
+      if (lastSync && lastSync.signature === signature && Date.now() - lastSync.at < AUTO_SYNC_TTL_MS) {
+        lastSyncSignatureRef.current = signature
+        return
+      }
 
-    const lastSync = readLastAutoSync()
-    if (lastSync && lastSync.signature === syncSignature && Date.now() - lastSync.at < AUTO_SYNC_TTL_MS) {
-      lastSyncSignatureRef.current = syncSignature
-      return
+      inFlightRef.current = true
+      void syncLibraryCache(currentServers, { targetServerIds })
+        .then((result) => {
+          lastSyncSignatureRef.current = signature
+          writeLastAutoSync(signature)
+
+          for (const [serverId, summary] of Object.entries(result.summaries)) {
+            updateServerRef.current(serverId, { syncSummary: summary })
+          }
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error)
+          addDevLog({ kind: 'error', category: 'library-cache', message: `Background cache sync failed: ${message}` })
+          if (typeof window !== 'undefined') {
+            if (retryTimeoutRef.current) window.clearTimeout(retryTimeoutRef.current)
+            retryTimeoutRef.current = window.setTimeout(() => {
+              retryTimeoutRef.current = null
+              startSync(pendingSignatureRef.current || signature)
+            }, SYNC_RETRY_MS)
+          }
+        })
+        .finally(() => {
+          inFlightRef.current = false
+          const pending = pendingSignatureRef.current
+          pendingSignatureRef.current = null
+          if (pending && pending !== lastSyncSignatureRef.current) startSync(pending)
+        })
     }
 
-    inFlightRef.current = true
-    void syncLibraryCache(currentServers, { targetServerIds })
-      .then((result) => {
-        lastSyncSignatureRef.current = syncSignature
-        writeLastAutoSync(syncSignature)
-
-        for (const [serverId, summary] of Object.entries(result.summaries)) {
-          updateServerRef.current(serverId, { syncSummary: summary })
-        }
-      })
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error)
-        addDevLog({ kind: 'error', category: 'library-cache', message: `Background cache sync failed: ${message}` })
-      })
-      .finally(() => {
-        inFlightRef.current = false
-      })
+    if (!healthChecksComplete || !serversRef.current.length || !syncSignature) return
+    if (lastSyncSignatureRef.current === syncSignature) return
+    if (inFlightRef.current) {
+      pendingSignatureRef.current = syncSignature
+      return
+    }
+    startSync(syncSignature)
   }, [healthChecksComplete, syncSignature])
+
+  useEffect(() => {
+    return () => {
+      if (retryTimeoutRef.current) window.clearTimeout(retryTimeoutRef.current)
+    }
+  }, [])
 
   return null
 }

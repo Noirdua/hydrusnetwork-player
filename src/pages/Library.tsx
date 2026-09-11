@@ -37,7 +37,7 @@ import {
 } from './library/libraryHelpers'
 import { applyLibraryQueryFilters, getNamespacedQueryValue, matchesTrackSearch } from './library/librarySearch'
 import { useOverlayZoomLock } from '../hooks/useOverlayZoomLock'
-import { isPdfTrack, isThoriumReadableTrack } from '../utils/thoriumReader'
+import { isPdfTrack, isThoriumReadableTrack, openExternalHref } from '../utils/thoriumReader'
 import NestedCatalogLayout from './library/NestedCatalogLayout'
 import { buildNestedCatalog, resolveViewLayout, sliceNestedCatalog, viewLayoutKey } from './library/libraryLayouts'
 import { EntryList, handleLibraryImageError, TrackGrid, TrackTable, type TrackInteractionProps } from './library/LibraryLists'
@@ -325,7 +325,7 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
       void onPlayNow(track)
       return
     }
-    window.open(detailsTrack.url, '_blank', 'noopener,noreferrer')
+    openExternalHref(detailsTrack.url)
   }
 
   const handleOpenInApp = () => {
@@ -344,8 +344,11 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
     onClick: () => { void handleTrackActivate(track) },
     onContextMenu: (event: React.MouseEvent) => {
       event.preventDefault()
-      longPressTriggeredRef.current = false
+      longPressTriggeredRef.current = true
       void openTrackDetails(track)
+      window.setTimeout(() => {
+        longPressTriggeredRef.current = false
+      }, 500)
     },
     onTouchStart: () => {
       if (!isCompactTableLayout || typeof window === 'undefined') return
@@ -412,7 +415,7 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
   const visibleResults = useMemo(() => sortedCurrentTrackResults.slice(0, visibleCount), [sortedCurrentTrackResults, visibleCount])
   const visibleAlbums = useMemo(() => sortedAlbums.slice(0, visibleCount), [sortedAlbums, visibleCount])
   const visibleArtists = useMemo(() => sortedArtists.slice(0, visibleCount), [sortedArtists, visibleCount])
-  const showToolbarSortControls = viewLayout !== 'grid' || isCompactTableLayout
+  const showToolbarSortControls = viewLayout === 'nested-catalog' || isCompactTableLayout
   const currentViewLabel = sectionConfig.views.find((item) => item.id === view)?.label || sectionConfig.label
   const itemCount = isTrackLikeView
     ? sortedCurrentTrackResults.length
