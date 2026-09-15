@@ -8,16 +8,17 @@ type Props = {
 
 type State = {
   hasError: boolean
+  message: string
 }
 
 export default class ErrorBoundary extends React.Component<Props, State> {
   constructor(props: Props) {
     super(props)
-    this.state = { hasError: false }
+    this.state = { hasError: false, message: '' }
   }
 
-  static getDerivedStateFromError() {
-    return { hasError: true }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, message: error?.message || 'Unknown error' }
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
@@ -29,12 +30,11 @@ export default class ErrorBoundary extends React.Component<Props, State> {
     })
   }
 
-  handleReload = () => {
-    window.location.reload()
+  handleReset = () => {
+    this.setState({ hasError: false, message: '' })
   }
 
-  handleReset = () => {
-    this.setState({ hasError: false })
+  handleReload = () => {
     window.location.reload()
   }
 
@@ -46,14 +46,19 @@ export default class ErrorBoundary extends React.Component<Props, State> {
             Something went wrong
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 400 }}>
-            The application encountered an unexpected error. You can try reloading the page to recover.
+            The application encountered an unexpected error. Try again, or reload the page to recover.
           </Typography>
+          {this.state.message && (
+            <Typography variant="caption" color="text.secondary" sx={{ maxWidth: 520, fontFamily: 'monospace', wordBreak: 'break-word' }}>
+              {this.state.message}
+            </Typography>
+          )}
           <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
             <Button variant="contained" onClick={this.handleReset}>
-              Reload
+              Try again
             </Button>
-            <Button variant="outlined" onClick={() => window.location.reload()}>
-              Hard Reload
+            <Button variant="outlined" onClick={this.handleReload}>
+              Reload page
             </Button>
           </Box>
         </Box>

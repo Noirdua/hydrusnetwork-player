@@ -208,16 +208,6 @@ function resolveSourceUrl(encodedSource) {
   return decodeBase64Url(encodedSource)
 }
 
-function isPrivateOrLocalHostname(hostname) {
-  const host = String(hostname || '').replace(/^\[|\]$/g, '').toLowerCase()
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true
-  if (host.endsWith('.local') || host.endsWith('.lan')) return true
-  if (/^10(?:\.\d+){3}$/.test(host)) return true
-  if (/^192\.168(?:\.\d+){2}$/.test(host)) return true
-  if (/^172\.(1[6-9]|2\d|3[0-1])(?:\.\d+){2}$/.test(host)) return true
-  return false
-}
-
 function isAllowedSourceUrl(raw) {
   let parsed
   try {
@@ -226,16 +216,10 @@ function isAllowedSourceUrl(raw) {
     return false
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
-  if (!parsed.pathname.includes('/get_files/file')) return false
-  if (parsed.pathname.includes('/hydrus-proxy/')) return true
-  if (isPrivateOrLocalHostname(parsed.hostname)) return true
-  try {
-    const target = hydrusConfig().host
-    if (target) return new URL(target).hostname === parsed.hostname
-  } catch {
-    return false
-  }
-  return false
+  // Only Hydrus file fetches may be proxied. Hosts are intentionally not allow-listed:
+  // the app supports LAN and public Hydrus servers configured at runtime in Settings,
+  // so the streamer cannot know every valid origin. Keep it bound to a trusted network.
+  return parsed.pathname.includes('/get_files/file')
 }
 
 function parseContainerRootPath(xml) {
@@ -540,10 +524,21 @@ function loadPostedCatalog() {
 
 let postedCatalog = loadPostedCatalog()
 
+const MAX_JSON_BODY_BYTES = 1024 * 1024
+
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = []
-    req.on('data', (chunk) => chunks.push(chunk))
+    let size = 0
+    req.on('data', (chunk) => {
+      size += chunk.length
+      if (size > MAX_JSON_BODY_BYTES) {
+        reject(new Error('Request body too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
     req.on('end', () => {
       try {
         const raw = Buffer.concat(chunks).toString('utf8')

@@ -8,28 +8,6 @@ function isNavigationRequest(request, acceptHeader) {
   return request.mode === 'navigate' || acceptHeader.includes('text/html')
 }
 
-function getRangeBounds(rangeHeader, size) {
-  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader || '')
-  if (!match) return null
-
-  let start = match[1] ? Number(match[1]) : NaN
-  let end = match[2] ? Number(match[2]) : NaN
-
-  if (Number.isNaN(start) && Number.isNaN(end)) return null
-  if (Number.isNaN(start)) {
-    const suffixLength = end
-    if (!Number.isFinite(suffixLength) || suffixLength <= 0) return null
-    start = Math.max(size - suffixLength, 0)
-    end = size - 1
-  } else {
-    if (!Number.isFinite(start) || start < 0 || start >= size) return null
-    if (Number.isNaN(end) || end >= size) end = size - 1
-  }
-
-  if (end < start) return null
-  return { start, end }
-}
-
 async function trimMediaCache(cache) {
   const keys = await cache.keys()
   if (keys.length <= MAX_MEDIA_CACHE_ITEMS) return
@@ -38,32 +16,6 @@ async function trimMediaCache(cache) {
   for (let index = 0; index < overflow; index += 1) {
     await cache.delete(keys[index])
   }
-}
-
-async function createRangeResponse(cachedResponse, rangeHeader) {
-  const blob = await cachedResponse.blob()
-  const size = blob.size
-  const bounds = getRangeBounds(rangeHeader, size)
-
-  if (!bounds) {
-    return new Response(null, {
-      status: 416,
-      headers: { 'Content-Range': `bytes */${size}` }
-    })
-  }
-
-  const { start, end } = bounds
-  const slice = blob.slice(start, end + 1)
-  const headers = new Headers(cachedResponse.headers)
-  headers.set('Accept-Ranges', 'bytes')
-  headers.set('Content-Length', String(end - start + 1))
-  headers.set('Content-Range', `bytes ${start}-${end}/${size}`)
-
-  return new Response(slice, {
-    status: 206,
-    statusText: 'Partial Content',
-    headers,
-  })
 }
 
 function isHydrusFileRequest(url) {

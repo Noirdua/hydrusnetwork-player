@@ -10,7 +10,8 @@ import ErrorBoundary from './components/ErrorBoundary'
 import StartupLibraryCacheSync from './components/StartupLibraryCacheSync'
 import { Box, CssBaseline, useMediaQuery } from '@mui/material'
 import { ThemeProvider } from '@mui/material/styles'
-import { ACTIVE_KEY, STORAGE_KEY, ServersProvider } from './context/ServersContext'
+import { ACTIVE_KEY, STORAGE_KEY, ServersProvider, useServers } from './context/ServersContext'
+import { getEnvHydrusDefaults } from './envDefaults'
 import { useDownloadManager } from './hooks/useDownloadManager'
 import { useExternalPlayback } from './hooks/useExternalPlayback'
 import { createAppTheme } from './themes'
@@ -25,13 +26,32 @@ const DevErrorPanel = lazy(() => import('./components/DevErrorPanel'))
 function getInitialActivePage(): MediaSection | 'settings' | 'downloads' {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return 'settings'
-
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) && parsed.length > 0 ? 'all' : 'settings'
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) && parsed.length > 0 ? 'all' : 'settings'
+    }
   } catch {
-    return 'settings'
+    // fall through to env defaults
   }
+
+  // A server seeded from Vite env is not in localStorage yet, so don't force Settings.
+  return getEnvHydrusDefaults().host ? 'all' : 'settings'
+}
+
+function ServerPresenceGuard({ activePage, onRequireSettings }: { activePage: string; onRequireSettings: () => void }) {
+  const { servers } = useServers()
+  const hasServers = servers.length > 0
+
+  useEffect(() => {
+    if (!hasServers && activePage !== 'settings') {
+      onRequireSettings()
+    }
+    if (!hasServers) {
+      try { localStorage.removeItem(ACTIVE_KEY) } catch { /* ignore */ }
+    }
+  }, [hasServers, activePage, onRequireSettings])
+
+  return null
 }
 
 function App() {
@@ -72,26 +92,6 @@ function App() {
     }
   }, [activePage])
 
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      const parsed = raw ? JSON.parse(raw) : []
-      const hasServers = Array.isArray(parsed) && parsed.length > 0
-
-      if (!hasServers && activePage !== 'settings') {
-        setActivePage('settings')
-      }
-
-      if (!hasServers) {
-        localStorage.removeItem(ACTIVE_KEY)
-      }
-    } catch {
-      if (activePage !== 'settings') {
-        setActivePage('settings')
-      }
-    }
-  }, [activePage])
-
   const toggleSidebar = useCallback(() => {
     if (isDesktopLayout) {
       setDesktopSidebarOpen((open) => !open)
@@ -117,6 +117,7 @@ function App() {
   return (
     <ServersProvider>
       <StartupLibraryCacheSync />
+      <ServerPresenceGuard activePage={activePage} onRequireSettings={() => setActivePage('settings')} />
       <ThemeProvider theme={theme}>
         <CssBaseline />
         <ErrorBoundary>
