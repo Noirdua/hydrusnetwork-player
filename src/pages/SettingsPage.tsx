@@ -29,7 +29,7 @@ import EditIcon from '@mui/icons-material/Edit'
 import AddIcon from '@mui/icons-material/Add'
 import CloudDownloadIcon from '@mui/icons-material/CloudDownload'
 import type { LibraryPrimaryAction, UiPreferences } from '../appPreferences'
-import { getDefaultThoriumWebUrl } from '../utils/thoriumReader'
+import { getDefaultThoriumWebUrl, normalizeThoriumWebUrl, probeThoriumWebUrl } from '../utils/thoriumReader'
 import { type LibraryLayoutId } from './library/libraryConfig'
 import { LIBRARY_LAYOUT_OPTIONS, viewLayoutKey } from './library/libraryLayouts'
 import type { Server } from '../context/ServersContext'
@@ -186,6 +186,7 @@ export default function SettingsPage({ onClose, preferences, onSavePreferences }
   const [testing, setTesting] = useState(false)
   const [syncingServerId, setSyncingServerId] = useState<string | null>(null)
   const [lastTest, setLastTest] = useState<string | null>(null)
+  const [thoriumTest, setThoriumTest] = useState<{ state: 'idle' | 'testing' | 'ok' | 'error'; message?: string }>({ state: 'idle' })
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [detailsText, setDetailsText] = useState<string | null>(null)
   const audioTracksLayoutKey = viewLayoutKey('audio', 'tracks')
@@ -369,6 +370,22 @@ export default function SettingsPage({ onClose, preferences, onSavePreferences }
     void refreshCacheStats(currentCacheKey)
   }, [currentCacheKey])
 
+  const handleTestThorium = async () => {
+    setThoriumTest({ state: 'testing' })
+    const result = await probeThoriumWebUrl(draft.thoriumWebUrl)
+    setThoriumTest({ state: result.ok ? 'ok' : 'error', message: result.message })
+  }
+
+  const handleResetThoriumUrl = () => {
+    setDraft((current) => ({ ...current, thoriumWebUrl: '' }))
+    setThoriumTest({ state: 'idle' })
+  }
+
+  const handleOpenThorium = () => {
+    const target = normalizeThoriumWebUrl(draft.thoriumWebUrl) || getDefaultThoriumWebUrl()
+    window.open(target, '_blank', 'noreferrer')
+  }
+
   const handleSavePreferences = () => {
     const nextLayouts = { ...preferences.libraryViewLayouts }
     if (audioTracksLayoutKey in preferences.libraryViewLayouts || draftAudioTracksLayout !== 'nested-catalog') {
@@ -473,17 +490,6 @@ export default function SettingsPage({ onClose, preferences, onSavePreferences }
                 sx={{ alignItems: 'center', m: 0, mt: 1.5 }}
               />
 
-              <TextField
-                size="small"
-                label="Thorium Web URL"
-                placeholder={getDefaultThoriumWebUrl()}
-                value={draft.thoriumWebUrl}
-                onChange={(event) => setDraft((current) => ({ ...current, thoriumWebUrl: event.target.value }))}
-                helperText="EPUB files open in Thorium Web. PDFs open in the browser reader. Leave blank to use localhost:3000."
-                sx={{ mt: 2, maxWidth: 480 }}
-                fullWidth
-              />
-
               <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 240px))' }, gap: 1.5, mt: 2 }}>
                 <FormControl size="small">
                   <InputLabel id="settings-audio-tracks-layout-label">Audio tracks</InputLabel>
@@ -542,6 +548,48 @@ export default function SettingsPage({ onClose, preferences, onSavePreferences }
                   />
                 </>
               )}
+            </Box>
+
+            <Box sx={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 2, bgcolor: 'background.paper', p: { xs: 1.5, sm: 2 }, mb: { xs: 2, lg: 3 } }}>
+              <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 2, mb: 1.5, flexWrap: 'wrap' }}>
+                <Box>
+                  <Typography variant="subtitle1" sx={{ mb: 0.5 }}>Book reader (Thorium Web)</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    EPUB files open in Thorium Web. PDFs and other formats keep using the browser reader. This setting is saved in this browser.
+                  </Typography>
+                </Box>
+                <Button variant="contained" onClick={handleSavePreferences} disabled={!preferencesDirty}>
+                  Save preferences
+                </Button>
+              </Box>
+
+              <TextField
+                size="small"
+                label="Thorium Web URL"
+                placeholder={getDefaultThoriumWebUrl()}
+                value={draft.thoriumWebUrl}
+                onChange={(event) => {
+                  setDraft((current) => ({ ...current, thoriumWebUrl: event.target.value }))
+                  setThoriumTest({ state: 'idle' })
+                }}
+                helperText={`Leave blank to use the default (${getDefaultThoriumWebUrl()}).`}
+                sx={{ maxWidth: 520 }}
+                fullWidth
+              />
+
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center', mt: 1.5 }}>
+                <Button variant="outlined" onClick={() => { void handleTestThorium() }} disabled={thoriumTest.state === 'testing'}>
+                  {thoriumTest.state === 'testing' ? 'Testing...' : 'Test connection'}
+                </Button>
+                <Button variant="text" onClick={handleOpenThorium}>
+                  Open Thorium Web
+                </Button>
+                <Button variant="text" onClick={handleResetThoriumUrl} disabled={!draft.thoriumWebUrl}>
+                  Use default
+                </Button>
+                {thoriumTest.state === 'ok' && <Chip size="small" color="success" variant="outlined" label={thoriumTest.message || 'Reachable'} />}
+                {thoriumTest.state === 'error' && <Chip size="small" color="error" variant="outlined" label={thoriumTest.message || 'Not reachable'} />}
+              </Box>
             </Box>
 
             <Box sx={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 2, bgcolor: 'background.paper', p: { xs: 1.5, sm: 2 }, mb: { xs: 2, lg: 3 } }}>

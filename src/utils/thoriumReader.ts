@@ -28,6 +28,22 @@ export function getThoriumWebUrl() {
   return normalizeThoriumWebUrl(loadUiPreferences().thoriumWebUrl) || getDefaultThoriumWebUrl()
 }
 
+export async function probeThoriumWebUrl(value?: string | null): Promise<{ ok: boolean; target: string; message: string }> {
+  const target = normalizeThoriumWebUrl(value) || getDefaultThoriumWebUrl()
+
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:' && /^http:\/\//i.test(target)) {
+    return { ok: false, target, message: 'HTTPS page cannot reach an HTTP Thorium URL' }
+  }
+
+  try {
+    // no-cors gives an opaque response for any reachable origin and rejects on network failure.
+    await fetch(target, { method: 'GET', mode: 'no-cors', cache: 'no-store' })
+    return { ok: true, target, message: 'Reachable' }
+  } catch {
+    return { ok: false, target, message: 'Not reachable — is Thorium Web running?' }
+  }
+}
+
 export function isPdfTrack(track: Pick<Track, 'mimeType' | 'url'>) {
   const mime = (track.mimeType || '').toLowerCase()
   if (mime.includes('pdf')) return true
