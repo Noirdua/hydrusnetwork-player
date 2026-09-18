@@ -222,6 +222,25 @@ function isAllowedSourceUrl(raw) {
   return parsed.pathname.includes('/get_files/file')
 }
 
+function normalizeThoriumTarget(value) {
+  try {
+    const parsed = new URL(String(value || '').trim())
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+    if (!parsed.hostname || parsed.username || parsed.password) return null
+    const path = parsed.pathname.replace(/\/+$/, '')
+    return `${parsed.origin}${path}`
+  } catch {
+    return null
+  }
+}
+
+function requestOrigin(req) {
+  const protoHeader = req.headers['x-forwarded-proto']
+  const proto = protoHeader ? String(protoHeader).split(',')[0] : 'http'
+  const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost'
+  return `${proto}://${host}`
+}
+
 function parseContainerRootPath(xml) {
   const match = xml.match(/<rootfile\b[^>]*>/i)
   if (!match) return ''
@@ -720,6 +739,30 @@ export async function handleReadiumRequest(req, res) {
 
   const pathOnly = rawUrl.split('?')[0]
   const isCatalog = pathOnly === `${READIUM_PREFIX}/catalog` || pathOnly === `${READIUM_PREFIX}/catalog.json`
+
+  if (pathOnly === `${READIUM_PREFIX}/open` && (req.method === 'GET' || req.method === 'HEAD')) {
+    const incoming = new URL(rawUrl, 'http://streamer.local')
+    const sourceUrl = incoming.searchParams.get('src') || ''
+    const thorium = normalizeThoriumTarget(incoming.searchParams.get('thorium'))
+
+    // Only the app itself opens this endpoint; reject cross-site redirect attempts.
+    const fetchSite = req.headers['sec-fetch-site']
+    if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+      send(res, 403, 'Forbidden')
+      return true
+    }
+
+    if (!sourceUrl || !isAllowedSourceUrl(sourceUrl) || !thorium) {
+      send(res, 400, 'Invalid open request')
+      return true
+    }
+
+    const id = rememberSourceUrl(sourceUrl)
+    const manifestUrl = `${requestOrigin(req)}${READIUM_PREFIX}/webpub/${id}/manifest.json`
+    const target = `${thorium}/read/manifest/${encodeURIComponent(manifestUrl)}`
+    send(res, 302, '', { Location: target, 'Cache-Control': 'no-store' })
+    return true
+  }
 
   if (pathOnly === `${READIUM_PREFIX}/source` && req.method === 'POST') {
     try {

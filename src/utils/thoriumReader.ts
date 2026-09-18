@@ -79,30 +79,14 @@ export async function registerThoriumSource(fileUrl: string, origin = window.loc
   return data.id
 }
 
-export function buildThoriumReaderHref(encodedSource: string, origin = window.location.origin) {
+export function buildThoriumOpenHref(fileUrl: string, thoriumWebUrl = getThoriumWebUrl(), origin = window.location.origin) {
   const base = origin.replace(/\/+$/, '')
-  const manifestUrl = `${base}/readium/webpub/${encodedSource}/manifest.json`
-  return `${getThoriumWebUrl()}/read/manifest/${encodeURIComponent(manifestUrl)}`
+  const source = encodeURIComponent(fileUrl)
+  const thorium = encodeURIComponent(normalizeThoriumWebUrl(thoriumWebUrl) || getDefaultThoriumWebUrl())
+  // Same-origin URL the streamer turns into a redirect, keeping the Hydrus key off the Thorium origin.
+  return `${base}/readium/open?src=${source}&thorium=${thorium}`
 }
 
-export async function openInThoriumReader(track: Track) {
-  const placeholder = window.open('about:blank', '_blank')
-  if (placeholder) {
-    try { placeholder.opener = null } catch {}
-  }
-
-  const origin = window.location.origin.replace(/\/+$/, '')
-  let encodedSource = encodeUrlSafeBase64(track.url)
-  try {
-    encodedSource = await registerThoriumSource(track.url, origin)
-  } catch {
-    // Fall back to the encoded file URL if the streamer is unavailable.
-  }
-
-  const href = buildThoriumReaderHref(encodedSource, origin)
-  if (placeholder) {
-    placeholder.location.href = href
-    return
-  }
-  openExternalHref(href)
+export function openInThoriumReader(track: Track) {
+  openExternalHref(buildThoriumOpenHref(track.url))
 }

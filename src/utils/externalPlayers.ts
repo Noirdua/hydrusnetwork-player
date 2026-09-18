@@ -1,5 +1,8 @@
 import type { Track } from '../types'
+import { isBookMimeType } from './bookDetection'
 import { buildExternalPlayerMetadata } from './trackMetadata'
+
+const NON_PLAYABLE_MEDIA_KINDS = new Set(['books', 'image', 'application'])
 
 export const VIDEO_URL_PATTERN = /\.(m3u8|mp4|webm|ogv|mov|mkv|avi|wmv)$/i
 export const AUDIO_URL_PATTERN = /\.(mp3|m4a|aac|flac|wav|ogg|opus|oga|wma)$/i
@@ -21,11 +24,17 @@ export function isVideoMediaTrack(track: Track) {
 }
 
 export function isPlayableMediaTrack(track: Track) {
+  if (track.mediaKind && NON_PLAYABLE_MEDIA_KINDS.has(track.mediaKind)) return false
+
   const mimeType = normalizeMimeForPlaybackCheck(track.mimeType)
+  if (isBookMimeType(mimeType)) return false
   if (isVideoMediaTrack(track)) return true
   if (mimeType.startsWith('audio/') || track.isVideo === false) return true
   if (AUDIO_URL_PATTERN.test(track.url)) return true
-  if (/\/get_files\/file(?:\?|$)/i.test(track.url)) return true
+
+  // Hydrus file URLs have no extension; only probe media sections, never books/images/apps.
+  const kindAllowsProbe = !track.mediaKind || track.mediaKind === 'all' || track.mediaKind === 'audio' || track.mediaKind === 'video'
+  if (kindAllowsProbe && /\/get_files\/file(?:\?|$)/i.test(track.url)) return true
   return false
 }
 
