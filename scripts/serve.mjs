@@ -99,6 +99,7 @@ function proxyHydrus(req, res, url) {
   delete headers['origin']
   delete headers['referer']
 
+  let clientClosed = false
   const upstream = transport.request(
     {
       protocol: target.protocol,
@@ -109,6 +110,11 @@ function proxyHydrus(req, res, url) {
       headers,
     },
     (upstreamRes) => {
+      if (clientClosed || res.destroyed || res.writableEnded) {
+        upstreamRes.destroy()
+        upstream.destroy()
+        return
+      }
       const outHeaders = { ...upstreamRes.headers }
       // Same-origin browser requests do not need CORS, but keep responses clean.
       delete outHeaders['access-control-allow-origin']
@@ -117,13 +123,23 @@ function proxyHydrus(req, res, url) {
     },
   )
 
+  const stopUpstream = () => {
+    clientClosed = true
+    if (!upstream.destroyed) upstream.destroy()
+  }
+
   upstream.setTimeout(30000)
   upstream.on('timeout', () => {
     upstream.destroy()
-    send(res, 504, 'Hydrus proxy timed out')
+    if (!clientClosed) send(res, 504, 'Hydrus proxy timed out')
   })
   upstream.on('error', (error) => {
+    if (clientClosed || res.destroyed || res.writableEnded) return
     send(res, 502, `Hydrus proxy failed: ${error.message}`)
+  })
+  req.on('aborted', stopUpstream)
+  res.on('close', () => {
+    if (!res.writableEnded) stopUpstream()
   })
 
   req.pipe(upstream)

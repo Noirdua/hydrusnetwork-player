@@ -37,9 +37,22 @@ const DB_CONFIG = {
 }
 const MAX_TRACKS_PER_KIND = 2500
 const textEncoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null
+const cacheRevisions = new Map<string, number>()
+const cacheWriteTails = new Map<string, Promise<void>>()
 
 export function buildLibraryCacheKey(servers: CacheServerDescriptor[]) {
   return servers.map((server) => `${server.id}:${server.host}:${server.port ?? ''}:${server.ssl ? 'https' : 'http'}`).join('|')
+}
+
+export function getLibraryCacheRevision(cacheKey: string) {
+  return cacheRevisions.get(cacheKey) ?? 0
+}
+
+export function bumpLibraryCacheRevision(cacheKey: string) {
+  if (!cacheKey) return 0
+  const next = getLibraryCacheRevision(cacheKey) + 1
+  cacheRevisions.set(cacheKey, next)
+  return next
 }
 
 function estimateRecordBytes(record: LibraryCacheRecord) {
@@ -104,27 +117,36 @@ export async function getLibraryCacheStats(activeCacheKey: string): Promise<Libr
   }
 }
 
-export async function saveLibraryCache(cacheKey: string, tracks: Track[]) {
+export async function saveLibraryCache(cacheKey: string, tracks: Track[], revision = getLibraryCacheRevision(cacheKey)) {
   if (!cacheKey || typeof indexedDB === 'undefined') return
 
-  const validTracks = tracks.filter((track) => track.serverId && track.fileId != null && track.url)
-  const tracksByKind = new Map<string, Track[]>()
-  for (const track of validTracks) {
-    const kind = track.mediaKind || 'all'
-    const bucket = tracksByKind.get(kind) || []
-    bucket.push(track)
-    tracksByKind.set(kind, bucket)
-  }
+  const previous = cacheWriteTails.get(cacheKey) ?? Promise.resolve()
+  const write = previous.then(async () => {
+    if (revision !== getLibraryCacheRevision(cacheKey)) return
 
-  const trimmedTracks = Array.from(tracksByKind.values())
-    .flatMap((bucket) => bucket.slice(-MAX_TRACKS_PER_KIND))
-    .map(({ id: _id, ...track }) => track)
+    const validTracks = tracks.filter((track) => track.serverId && track.fileId != null && track.url)
+    const tracksByKind = new Map<string, Track[]>()
+    for (const track of validTracks) {
+      const kind = track.mediaKind || 'all'
+      const bucket = tracksByKind.get(kind) || []
+      bucket.push(track)
+      tracksByKind.set(kind, bucket)
+    }
 
-  const record: LibraryCacheRecord = {
-    cacheKey,
-    updatedAt: Date.now(),
-    tracks: trimmedTracks,
-  }
+    const trimmedTracks = Array.from(tracksByKind.values())
+      .flatMap((bucket) => bucket.slice(-MAX_TRACKS_PER_KIND))
+      .map(({ id: _id, ...track }) => track)
 
-  await withStore(DB_CONFIG, 'readwrite', (store) => store.put(record))
+    if (revision !== getLibraryCacheRevision(cacheKey)) return
+
+    const record: LibraryCacheRecord = {
+      cacheKey,
+      updatedAt: Date.now(),
+      tracks: trimmedTracks,
+    }
+
+    await withStore(DB_CONFIG, 'readwrite', (store) => store.put(record))
+  })
+  cacheWriteTails.set(cacheKey, write.then(() => undefined, () => undefined))
+  return write
 }

@@ -81,7 +81,8 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
 
     try { window.URL.revokeObjectURL(objectUrl) } catch {}
     delete downloadUrlsRef.current[id]
-  }, [])
+    updateDownload(id, { saveHref: undefined })
+  }, [updateDownload])
 
   const queueDownload = useCallback((track: Track, details?: HydrusFileDetails | null) => {
     const id = makeId()
@@ -214,7 +215,7 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
         updateDownload(id, {
           status: 'completed',
           fileName: downloadName,
-          saveHref: objectUrl,
+          saveHref: undefined,
           receivedBytes: blob.size,
           totalBytes: blob.size || resolvedTotalBytes || null,
           note: persistNote,
@@ -251,7 +252,7 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
     const download = downloads.find((entry) => entry.id === id)
     if (!download?.fileName) return
 
-    const liveHref = download.saveHref || downloadUrlsRef.current[id]
+    const liveHref = downloadUrlsRef.current[id]
     if (liveHref) {
       triggerBrowserDownload(liveHref, download.fileName)
       return
@@ -261,16 +262,17 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
       .then((blob) => {
         if (!blob) return
         const objectUrl = window.URL.createObjectURL(blob)
+        downloadUrlsRef.current[id] = objectUrl
         triggerBrowserDownload(objectUrl, download.fileName || 'download')
         window.setTimeout(() => {
-          try { window.URL.revokeObjectURL(objectUrl) } catch {}
+          if (downloadUrlsRef.current[id] === objectUrl) revokeDownloadUrl(id)
         }, 60_000)
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
         addDevLog({ kind: 'error', category: 'downloads', message: `Failed to reopen stored download: ${message}` })
       })
-  }, [downloads])
+  }, [downloads, revokeDownloadUrl])
 
   const dismissDownload = useCallback((id: string) => {
     dismissedIdsRef.current.add(id)

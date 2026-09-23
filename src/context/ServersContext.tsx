@@ -25,6 +25,7 @@ function buildConnectivitySignature(server: Pick<ServerConfig, 'host' | 'port' |
 // Re-test connectivity at most once per this window for a server that was recently verified.
 const CONNECTIVITY_RECHECK_TTL_MS = 30 * 60 * 1000
 const FAILURE_RETRY_MS = 8000
+const FAILURE_RETRY_MAX_MS = 5 * 60 * 1000
 
 function seedVerifiedSignatures(servers: Server[]): Record<string, string> {
   const seeded: Record<string, string> = {}
@@ -114,6 +115,7 @@ export function ServersProvider({ children }: { children: React.ReactNode }) {
   const connectivityRequestsRef = useRef<Record<string, Promise<ConnectivityResult>>>({})
   const serversRef = useRef(servers)
   const failureRetryTimeoutsRef = useRef<Record<string, number>>({})
+  const failureRetryAttemptRef = useRef<Record<string, number>>({})
   serversRef.current = servers
 
   useEffect(() => saveServers(servers), [servers])
@@ -170,7 +172,16 @@ export function ServersProvider({ children }: { children: React.ReactNode }) {
       const current = serversRef.current.find((candidate) => candidate.id === server.id)
       if (!current || buildConnectivitySignature(current) !== signature) return res
 
-      updateServer(server.id, { lastTest: { ...res, timestamp: Date.now() } })
+      const previous = current.lastTest
+      const unchanged = !!previous
+        && previous.ok === res.ok
+        && previous.message === res.message
+        && previous.status === res.status
+        && previous.searchOk === res.searchOk
+        && previous.rangeSupported === res.rangeSupported
+      if (!unchanged) {
+        updateServer(server.id, { lastTest: { ...res, timestamp: Date.now() } })
+      }
       setVerifiedConnectivitySignatures((prev) => {
         if (prev[server.id] === signature) return prev
         return { ...prev, [server.id]: signature }
@@ -181,14 +192,19 @@ export function ServersProvider({ children }: { children: React.ReactNode }) {
         delete failureRetryTimeoutsRef.current[server.id]
       }
 
-      if (!res.ok && typeof window !== 'undefined') {
+      if (res.ok) {
+        delete failureRetryAttemptRef.current[requestKey]
+      } else if (typeof window !== 'undefined') {
+        const attempt = failureRetryAttemptRef.current[requestKey] ?? 0
+        failureRetryAttemptRef.current[requestKey] = attempt + 1
+        const delay = Math.min(FAILURE_RETRY_MAX_MS, FAILURE_RETRY_MS * 2 ** Math.min(attempt, 8))
         failureRetryTimeoutsRef.current[server.id] = window.setTimeout(() => {
           delete failureRetryTimeoutsRef.current[server.id]
           const latest = serversRef.current.find((candidate) => candidate.id === server.id)
           if (!latest || buildConnectivitySignature(latest) !== signature || latest.lastTest?.ok) return
           delete connectivityRequestsRef.current[requestKey]
           void runPersistedConnectivityTest(latest)
-        }, FAILURE_RETRY_MS)
+        }, delay)
       }
 
       return res
@@ -217,6 +233,11 @@ export function ServersProvider({ children }: { children: React.ReactNode }) {
       if (!activeServerIds.has(serverId)) {
         delete connectivityRequestsRef.current[requestKey]
       }
+    })
+
+    Object.keys(failureRetryAttemptRef.current).forEach((requestKey) => {
+      const [serverId] = requestKey.split('|')
+      if (!activeServerIds.has(serverId)) delete failureRetryAttemptRef.current[requestKey]
     })
 
     for (const server of servers) {

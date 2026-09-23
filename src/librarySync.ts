@@ -1,5 +1,5 @@
 import { getHydrusClient, extractTitleFromTags, type ServerConfig } from './api/hydrusClient'
-import { buildLibraryCacheKey, loadLibraryCache, pruneLibraryCache, saveLibraryCache } from './libraryCache'
+import { buildLibraryCacheKey, bumpLibraryCacheRevision, loadLibraryCache, pruneLibraryCache, saveLibraryCache } from './libraryCache'
 import { SECTION_CONFIG } from './pages/library/libraryConfig'
 import { getTrackCacheKey } from './utils/trackMetadata'
 import { extractNamespaceValue } from './utils/extractNamespaceValue'
@@ -35,7 +35,15 @@ function dispatchSyncEvent(detail: SyncEventDetail) {
   window.dispatchEvent(new CustomEvent(LIBRARY_CACHE_SYNC_EVENT, { detail }))
 }
 
-export async function syncLibraryCache(servers: LibrarySyncServer[], options: { targetServerIds?: string[] } = {}): Promise<LibraryCacheSyncResult> {
+let syncTail: Promise<void> = Promise.resolve()
+
+export function syncLibraryCache(servers: LibrarySyncServer[], options: { targetServerIds?: string[] } = {}): Promise<LibraryCacheSyncResult> {
+  const run = syncTail.then(() => syncLibraryCacheNow(servers, options))
+  syncTail = run.then(() => undefined, () => undefined)
+  return run
+}
+
+async function syncLibraryCacheNow(servers: LibrarySyncServer[], options: { targetServerIds?: string[] } = {}): Promise<LibraryCacheSyncResult> {
   const cacheKey = buildLibraryCacheKey(servers)
   const targetServerIds = new Set(options.targetServerIds && options.targetServerIds.length > 0
     ? options.targetServerIds
@@ -51,6 +59,7 @@ export async function syncLibraryCache(servers: LibrarySyncServer[], options: { 
     }
   }
 
+  const revision = bumpLibraryCacheRevision(cacheKey)
   dispatchSyncEvent({ cacheKey, phase: 'started', serverIds: targetServers.map((server) => server.id) })
 
   try {
@@ -102,7 +111,7 @@ export async function syncLibraryCache(servers: LibrarySyncServer[], options: { 
             continue
           }
 
-          const metadataMap = await client.getFilesMetadata(ids, 6)
+          const metadataMap = await client.getFilesMetadata(ids, 6, undefined, { fresh: true })
           let sectionCount = 0
           let bookCount = 0
 
@@ -186,8 +195,8 @@ export async function syncLibraryCache(servers: LibrarySyncServer[], options: { 
     }
 
     const mergedTracks = Object.values(mergedTrackMap)
-    await saveLibraryCache(cacheKey, mergedTracks)
-    await pruneLibraryCache(cacheKey)
+    await saveLibraryCache(cacheKey, mergedTracks, revision)
+    await pruneLibraryCache(cacheKey).catch(() => undefined)
     void publishHydrusEpubCatalogFromTracks(mergedTracks).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       console.warn('[librarySync] Thorium EPUB catalog publish failed:', message)

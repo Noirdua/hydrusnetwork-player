@@ -13,6 +13,7 @@ export const READIUM_PREFIX = '/readium'
 const MAX_PUBLICATION_BYTES = 150 * 1024 * 1024
 const CACHE_LIMIT = 8
 const publicationCache = new Map()
+const publicationLoads = new Map()
 const sourceAliases = new Map()
 const SOURCE_ALIAS_LIMIT = 400
 const SOURCES_FILE = path.join(STREAMER_ROOT, '.readium-sources.json')
@@ -471,13 +472,28 @@ function rememberPublication(sourceUrl, entry) {
   }
 }
 
-async function loadPublication(sourceUrl, selfHref) {
-  const cached = publicationCache.get(sourceUrl)
-  if (cached) {
-    rememberPublication(sourceUrl, cached)
-    return cached
-  }
+function retargetPublication(entry, selfHref) {
+  if (!entry) return entry
+  if (entry.kind === 'pdf') return buildPdfPublication(entry.buffer, selfHref)
+  if (entry.selfHref === selfHref) return entry
 
+  const links = (entry.manifest.links || []).map((link) => {
+    if (link.rel === 'self') return { ...link, href: selfHref }
+    if (link.type === 'application/vnd.readium.position-list+json') {
+      return { ...link, href: `${publicationBase(selfHref)}positions.json` }
+    }
+    return link
+  })
+  const metadata = entry.manifest.metadata?.identifier === entry.selfHref
+    ? { ...entry.manifest.metadata, identifier: selfHref }
+    : entry.manifest.metadata
+  return {
+    ...entry,
+    manifest: { ...entry.manifest, links, metadata },
+  }
+}
+
+async function fetchPublication(sourceUrl, selfHref) {
   const response = await fetch(sourceUrl, { signal: AbortSignal.timeout(60000) })
   if (!response.ok) {
     throw new Error(`Failed to fetch publication (${response.status})`)
@@ -485,6 +501,7 @@ async function loadPublication(sourceUrl, selfHref) {
 
   const lengthHeader = Number(response.headers.get('content-length') || 0)
   if (lengthHeader > MAX_PUBLICATION_BYTES) {
+    try { await response.body?.cancel() } catch {}
     throw new Error('Publication is too large to stream')
   }
 
@@ -494,7 +511,7 @@ async function loadPublication(sourceUrl, selfHref) {
   }
 
   if (isPdf(buffer)) {
-    const entry = buildPdfPublication(buffer, selfHref)
+    const entry = { kind: 'pdf', buffer, selfHref }
     rememberPublication(sourceUrl, entry)
     return entry
   }
@@ -513,12 +530,32 @@ async function loadPublication(sourceUrl, selfHref) {
 
   const manifest = buildManifest(files, selfHref)
   const entry = {
+    kind: 'epub',
+    selfHref,
     files,
     manifest,
     positions: buildPositions(manifest.readingOrder),
   }
   rememberPublication(sourceUrl, entry)
   return entry
+}
+
+async function loadPublication(sourceUrl, selfHref) {
+  const cached = publicationCache.get(sourceUrl)
+  if (cached) {
+    rememberPublication(sourceUrl, cached)
+    return retargetPublication(cached, selfHref)
+  }
+
+  let pending = publicationLoads.get(sourceUrl)
+  if (!pending) {
+    pending = fetchPublication(sourceUrl, selfHref).finally(() => {
+      publicationLoads.delete(sourceUrl)
+    })
+    publicationLoads.set(sourceUrl, pending)
+  }
+
+  return retargetPublication(await pending, selfHref)
 }
 
 function parseReadiumPath(rawUrl) {

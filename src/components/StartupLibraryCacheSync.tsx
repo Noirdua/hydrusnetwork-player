@@ -78,12 +78,23 @@ export default function StartupLibraryCacheSync() {
       inFlightRef.current = true
       void syncLibraryCache(currentServers, { targetServerIds })
         .then((result) => {
-          lastSyncSignatureRef.current = signature
-          writeLastAutoSync(signature)
-
           for (const [serverId, summary] of Object.entries(result.summaries)) {
             updateServerRef.current(serverId, { syncSummary: summary })
           }
+
+          const failed = Object.values(result.summaries).some((summary) => summary.message?.startsWith('Sync failed'))
+          if (failed) {
+            if (typeof window === 'undefined') return
+            if (retryTimeoutRef.current) window.clearTimeout(retryTimeoutRef.current)
+            retryTimeoutRef.current = window.setTimeout(() => {
+              retryTimeoutRef.current = null
+              startSync(pendingSignatureRef.current || signature)
+            }, SYNC_RETRY_MS)
+            return
+          }
+
+          lastSyncSignatureRef.current = signature
+          writeLastAutoSync(signature)
         })
         .catch((error: unknown) => {
           const message = error instanceof Error ? error.message : String(error)
@@ -100,7 +111,13 @@ export default function StartupLibraryCacheSync() {
           inFlightRef.current = false
           const pending = pendingSignatureRef.current
           pendingSignatureRef.current = null
-          if (pending && pending !== lastSyncSignatureRef.current) startSync(pending)
+          if (pending && pending !== signature && pending !== lastSyncSignatureRef.current) {
+            if (retryTimeoutRef.current) {
+              window.clearTimeout(retryTimeoutRef.current)
+              retryTimeoutRef.current = null
+            }
+            startSync(pending)
+          }
         })
     }
 

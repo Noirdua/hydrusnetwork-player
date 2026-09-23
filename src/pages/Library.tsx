@@ -81,6 +81,10 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
   const visibleMediaInfoAbortRef = useRef<AbortController | null>(null)
   const detailsAbortRef = useRef<AbortController | null>(null)
   const attemptedMediaInfoKeysRef = useRef(new Set<string>())
+  const mediaInfoOwnersRef = useRef(new Map<string, number>())
+  const mediaInfoRunRef = useRef(0)
+  const serversRef = useRef(servers)
+  serversRef.current = servers
   const longPressTimerRef = useRef<number | null>(null)
   const longPressTriggeredRef = useRef(false)
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null)
@@ -437,54 +441,75 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
 
   useOverlayZoomLock(detailsOpen)
 
+  const serverCredentialsKey = servers
+    .map((server) => `${server.id}:${server.host}:${server.port ?? ''}:${server.apiKey || ''}:${server.ssl ? '1' : '0'}:${server.forceApiKeyInQuery ? '1' : '0'}`)
+    .join('|')
+
   useEffect(() => {
+    try { visibleMediaInfoAbortRef.current?.abort() } catch {}
+    const controller = new AbortController()
+    visibleMediaInfoAbortRef.current = controller
+    mediaInfoOwnersRef.current.clear()
+    attemptedMediaInfoKeysRef.current.clear()
+    return () => {
+      controller.abort()
+    }
+  }, [serverCredentialsKey])
+
+  useEffect(() => {
+    const controller = visibleMediaInfoAbortRef.current
+    if (!controller || controller.signal.aborted) return
+
     const candidates = visibleRenderedTracks.filter((track) => {
       const cacheKey = getTrackCacheKey(track.serverId, track.fileId)
-      if (!cacheKey || attemptedMediaInfoKeysRef.current.has(cacheKey)) return false
+      if (!cacheKey || attemptedMediaInfoKeysRef.current.has(cacheKey) || mediaInfoOwnersRef.current.has(cacheKey)) return false
       return needsVisibleMediaInfoBackfill(track)
     })
     if (candidates.length === 0) return
 
-    try { visibleMediaInfoAbortRef.current?.abort() } catch {}
-    const controller = new AbortController()
-    visibleMediaInfoAbortRef.current = controller
+    const runId = ++mediaInfoRunRef.current
+    const ownedKeys: string[] = []
+    for (const track of candidates) {
+      const cacheKey = getTrackCacheKey(track.serverId, track.fileId)
+      if (!cacheKey) continue
+      mediaInfoOwnersRef.current.set(cacheKey, runId)
+      ownedKeys.push(cacheKey)
+    }
 
     void (async () => {
-      const byServer = new Map<string, Track[]>()
-      for (const track of candidates) {
-        if (!track.serverId || track.fileId == null) continue
-        const list = byServer.get(track.serverId) || []
-        list.push(track)
-        byServer.set(track.serverId, list)
-      }
+      const updatedTracks: Array<Partial<Track> & Pick<Track, 'serverId' | 'fileId'>> = []
+      try {
+        const byServer = new Map<string, Track[]>()
+        for (const track of candidates) {
+          if (!track.serverId || track.fileId == null) continue
+          const list = byServer.get(track.serverId) || []
+          list.push(track)
+          byServer.set(track.serverId, list)
+        }
 
-      const updatedTracks = new Map<string, Track>()
+        for (const [serverId, tracks] of byServer) {
+          if (controller.signal.aborted) return
+          const server = serversRef.current.find((candidate) => candidate.id === serverId)
+          if (!server) continue
 
-      for (const [serverId, tracks] of byServer) {
-        if (controller.signal.aborted) return
-        const server = servers.find((candidate) => candidate.id === serverId)
-        if (!server) continue
-
-        try {
           const metadataMap = await getHydrusClient(server).getFilesMetadata(
             tracks.map((track) => track.fileId!).filter((fileId) => Number.isFinite(fileId)),
             6,
             controller.signal,
           )
-
           if (controller.signal.aborted) return
 
           for (const track of tracks) {
-            const attemptedKey = getTrackCacheKey(track.serverId, track.fileId)
-            if (attemptedKey) attemptedMediaInfoKeysRef.current.add(attemptedKey)
-            if (track.fileId == null) continue
+            if (track.fileId == null || !track.serverId) continue
             const mediaInfo = metadataMap[track.fileId]
             if (!mediaInfo) continue
             const cacheKey = getTrackCacheKey(track.serverId, track.fileId)
             if (!cacheKey) continue
+            attemptedMediaInfoKeysRef.current.add(cacheKey)
 
-            const nextTrack: Track = {
-              ...track,
+            const nextTrack: Partial<Track> & Pick<Track, 'serverId' | 'fileId'> = {
+              serverId: track.serverId,
+              fileId: track.fileId,
               mimeType: mediaInfo.mimeType ?? track.mimeType,
               isVideo: mediaInfo.isVideo ?? track.isVideo,
               hasThumbnail: mediaInfo.hasThumbnail ?? track.hasThumbnail ?? false,
@@ -499,21 +524,21 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
               && nextTrack.tags === track.tags
             ) continue
 
-            updatedTracks.set(cacheKey, nextTrack)
+            updatedTracks.push(nextTrack)
           }
-        } catch (error: unknown) {
-          if (error instanceof Error && error.name === 'AbortError') return
+        }
+      } catch (error: unknown) {
+        if (error instanceof Error && error.name === 'AbortError') return
+      } finally {
+        for (const key of ownedKeys) {
+          if (mediaInfoOwnersRef.current.get(key) === runId) mediaInfoOwnersRef.current.delete(key)
         }
       }
 
-      if (controller.signal.aborted || updatedTracks.size === 0) return
-      cacheTracks(Array.from(updatedTracks.values()))
+      if (controller.signal.aborted || updatedTracks.length === 0) return
+      cacheTracks(updatedTracks)
     })()
-
-    return () => {
-      controller.abort()
-    }
-  }, [cacheTracks, servers, visibleRenderedTracks])
+  }, [cacheTracks, serverCredentialsKey, visibleRenderedTracks])
 
   const canLoadMore = isTrackLikeView
     ? shouldShowGroupedTracks
