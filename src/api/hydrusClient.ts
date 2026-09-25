@@ -49,7 +49,6 @@ export type HydrusSearchTags = HydrusSearchTag[]
 const SYSTEM_PREDICATE_PATTERN = /^(system:[^<>!=]+?)\s*(<=|>=|!=|=|<|>)\s*(.+)$/i
 const SEARCH_TOKEN_PATTERN = /(?:[^\s"]+:"(?:[^"\\]|\\.)*"|"(?:[^"\\]|\\.)*"|\S+)/g
 const METADATA_CACHE_LIMIT = 256
-const METADATA_CACHE_TTL_MS = 2 * 60 * 1000
 
 const clientRegistry = new Map<string, { signature: string; client: HydrusClient }>()
 
@@ -106,9 +105,13 @@ export function getHydrusClient(cfg: Partial<ServerConfig> = {}) {
   return client
 }
 
+export function clearHydrusMetadataCache(serverId: string) {
+  clientRegistry.get(serverId)?.client.clearMetadataCache()
+}
+
 export class HydrusClient {
   cfg: ServerConfig
-  private metadataPayloadCache = new Map<number, { data: unknown; storedAt: number }>()
+  private metadataPayloadCache = new Map<number, unknown>()
 
   constructor(cfg: Partial<ServerConfig> = {}) {
     this.cfg = {
@@ -230,16 +233,16 @@ export class HydrusClient {
     return response
   }
 
+  clearMetadataCache() {
+    this.metadataPayloadCache.clear()
+  }
+
   private readMetadataPayload(fileId: number) {
     const cached = this.metadataPayloadCache.get(fileId)
-    if (!cached) return undefined
-    if (Date.now() - cached.storedAt > METADATA_CACHE_TTL_MS) {
-      this.metadataPayloadCache.delete(fileId)
-      return undefined
-    }
+    if (cached === undefined) return undefined
     this.metadataPayloadCache.delete(fileId)
     this.metadataPayloadCache.set(fileId, cached)
-    return cached.data
+    return cached
   }
 
   private rememberMetadataPayload(fileId: number, data: unknown) {
@@ -248,7 +251,7 @@ export class HydrusClient {
       const oldest = this.metadataPayloadCache.keys().next().value
       if (oldest != null) this.metadataPayloadCache.delete(oldest)
     }
-    this.metadataPayloadCache.set(fileId, { data, storedAt: Date.now() })
+    this.metadataPayloadCache.set(fileId, data)
   }
 
   private async getFileMetadataPayload(fileId: number, signal?: AbortSignal) {
@@ -498,18 +501,13 @@ export class HydrusClient {
     }
   }
 
-  async getFilesMetadata(fileIds: number[], concurrency = 4, signal?: AbortSignal, options?: { fresh?: boolean }): Promise<Record<number, HydrusFileMetadata>> {
+  async getFilesMetadata(fileIds: number[], concurrency = 4, signal?: AbortSignal): Promise<Record<number, HydrusFileMetadata>> {
     const out: Record<number, HydrusFileMetadata> = {}
     if (!fileIds || fileIds.length === 0) return out
 
     const uniqueFileIds = Array.from(new Set(fileIds.filter((fileId) => Number.isFinite(fileId))))
     const missingFileIds: number[] = []
-    const fresh = options?.fresh === true
     for (const fileId of uniqueFileIds) {
-      if (fresh) {
-        missingFileIds.push(fileId)
-        continue
-      }
       const cached = this.readMetadataPayload(fileId)
       if (cached !== undefined) {
         out[fileId] = this.metadataFromPayload(cached, fileId)

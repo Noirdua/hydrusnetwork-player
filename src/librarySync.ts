@@ -1,4 +1,4 @@
-import { getHydrusClient, extractTitleFromTags, type ServerConfig } from './api/hydrusClient'
+import { clearHydrusMetadataCache, getHydrusClient, extractTitleFromTags, type ServerConfig } from './api/hydrusClient'
 import { buildLibraryCacheKey, bumpLibraryCacheRevision, loadLibraryCache, pruneLibraryCache, saveLibraryCache } from './libraryCache'
 import { SECTION_CONFIG } from './pages/library/libraryConfig'
 import { getTrackCacheKey } from './utils/trackMetadata'
@@ -12,13 +12,21 @@ const SYNC_SECTIONS = (Object.entries(SECTION_CONFIG) as Array<[MediaSection, (t
   .filter((entry): entry is [Exclude<MediaSection, 'all' | 'books'>, (typeof SECTION_CONFIG)[MediaSection] & { systemPredicate: string }] => Boolean(entry[1].systemPredicate))
   .map(([id, config]) => ({ id, predicate: config.systemPredicate }))
 
-export const LIBRARY_CACHE_SYNC_EVENT = 'api-media-player:library-cache-sync'
-
-type SyncEventDetail = {
+export type LibrarySyncEvent = {
   cacheKey: string
   phase: 'started' | 'completed' | 'failed'
   serverIds: string[]
   error?: string
+  tracks?: Track[]
+}
+
+const syncListeners = new Set<(detail: LibrarySyncEvent) => void>()
+
+export function subscribeLibrarySync(listener: (detail: LibrarySyncEvent) => void) {
+  syncListeners.add(listener)
+  return () => {
+    syncListeners.delete(listener)
+  }
 }
 
 export type LibrarySyncServer = ServerConfig
@@ -30,9 +38,8 @@ export type LibraryCacheSyncResult = {
   removedCounts: Record<string, number>
 }
 
-function dispatchSyncEvent(detail: SyncEventDetail) {
-  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function' || typeof CustomEvent === 'undefined') return
-  window.dispatchEvent(new CustomEvent(LIBRARY_CACHE_SYNC_EVENT, { detail }))
+function dispatchSyncEvent(detail: LibrarySyncEvent) {
+  for (const listener of syncListeners) listener(detail)
 }
 
 let syncTail: Promise<void> = Promise.resolve()
@@ -97,6 +104,7 @@ async function syncLibraryCacheNow(servers: LibrarySyncServer[], options: { targ
 
       try {
         const client = getHydrusClient(server)
+        clearHydrusMetadataCache(server.id)
 
         for (const section of SYNC_SECTIONS) {
           const searchTags = [section.predicate]
@@ -111,7 +119,7 @@ async function syncLibraryCacheNow(servers: LibrarySyncServer[], options: { targ
             continue
           }
 
-          const metadataMap = await client.getFilesMetadata(ids, 6, undefined, { fresh: true })
+          const metadataMap = await client.getFilesMetadata(ids, 6)
           let sectionCount = 0
           let bookCount = 0
 
@@ -201,7 +209,12 @@ async function syncLibraryCacheNow(servers: LibrarySyncServer[], options: { targ
       const message = error instanceof Error ? error.message : String(error)
       console.warn('[librarySync] Thorium EPUB catalog publish failed:', message)
     })
-    dispatchSyncEvent({ cacheKey, phase: 'completed', serverIds: targetServers.map((server) => server.id) })
+    dispatchSyncEvent({
+      cacheKey,
+      phase: 'completed',
+      serverIds: targetServers.map((server) => server.id),
+      tracks: mergedTracks,
+    })
 
     return {
       cacheKey,

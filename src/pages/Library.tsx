@@ -81,8 +81,7 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
   const visibleMediaInfoAbortRef = useRef<AbortController | null>(null)
   const detailsAbortRef = useRef<AbortController | null>(null)
   const attemptedMediaInfoKeysRef = useRef(new Set<string>())
-  const mediaInfoOwnersRef = useRef(new Map<string, number>())
-  const mediaInfoRunRef = useRef(0)
+  const inFlightMediaInfoKeysRef = useRef(new Set<string>())
   const serversRef = useRef(servers)
   serversRef.current = servers
   const longPressTimerRef = useRef<number | null>(null)
@@ -446,10 +445,9 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
     .join('|')
 
   useEffect(() => {
-    try { visibleMediaInfoAbortRef.current?.abort() } catch {}
     const controller = new AbortController()
     visibleMediaInfoAbortRef.current = controller
-    mediaInfoOwnersRef.current.clear()
+    inFlightMediaInfoKeysRef.current.clear()
     attemptedMediaInfoKeysRef.current.clear()
     return () => {
       controller.abort()
@@ -460,21 +458,16 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
     const controller = visibleMediaInfoAbortRef.current
     if (!controller || controller.signal.aborted) return
 
+    const ownedKeys: string[] = []
     const candidates = visibleRenderedTracks.filter((track) => {
       const cacheKey = getTrackCacheKey(track.serverId, track.fileId)
-      if (!cacheKey || attemptedMediaInfoKeysRef.current.has(cacheKey) || mediaInfoOwnersRef.current.has(cacheKey)) return false
-      return needsVisibleMediaInfoBackfill(track)
+      if (!cacheKey || attemptedMediaInfoKeysRef.current.has(cacheKey) || inFlightMediaInfoKeysRef.current.has(cacheKey)) return false
+      if (!needsVisibleMediaInfoBackfill(track)) return false
+      inFlightMediaInfoKeysRef.current.add(cacheKey)
+      ownedKeys.push(cacheKey)
+      return true
     })
     if (candidates.length === 0) return
-
-    const runId = ++mediaInfoRunRef.current
-    const ownedKeys: string[] = []
-    for (const track of candidates) {
-      const cacheKey = getTrackCacheKey(track.serverId, track.fileId)
-      if (!cacheKey) continue
-      mediaInfoOwnersRef.current.set(cacheKey, runId)
-      ownedKeys.push(cacheKey)
-    }
 
     void (async () => {
       const updatedTracks: Array<Partial<Track> & Pick<Track, 'serverId' | 'fileId'>> = []
@@ -504,8 +497,7 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
             const mediaInfo = metadataMap[track.fileId]
             if (!mediaInfo) continue
             const cacheKey = getTrackCacheKey(track.serverId, track.fileId)
-            if (!cacheKey) continue
-            attemptedMediaInfoKeysRef.current.add(cacheKey)
+            if (cacheKey) attemptedMediaInfoKeysRef.current.add(cacheKey)
 
             const nextTrack: Partial<Track> & Pick<Track, 'serverId' | 'fileId'> = {
               serverId: track.serverId,
@@ -530,8 +522,8 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
       } catch (error: unknown) {
         if (error instanceof Error && error.name === 'AbortError') return
       } finally {
-        for (const key of ownedKeys) {
-          if (mediaInfoOwnersRef.current.get(key) === runId) mediaInfoOwnersRef.current.delete(key)
+        if (visibleMediaInfoAbortRef.current === controller) {
+          for (const key of ownedKeys) inFlightMediaInfoKeysRef.current.delete(key)
         }
       }
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getHydrusClient } from '../../api/hydrusClient'
 import { buildLibraryCacheKey, getLibraryCacheRevision, loadLibraryCache, saveLibraryCache } from '../../libraryCache'
-import { LIBRARY_CACHE_SYNC_EVENT } from '../../librarySync'
+import { subscribeLibrarySync, type LibrarySyncEvent } from '../../librarySync'
 import { getTrackCacheKey } from '../../utils/trackMetadata'
 import type { Track } from '../../types'
 
@@ -61,7 +61,6 @@ export function useLibraryCache({
   const persistTimeoutRef = useRef<number | null>(null)
   const syncHoldRef = useRef(false)
   const restoreGenerationRef = useRef(0)
-  const releaseGenerationRef = useRef(0)
   const serversRef = useRef(servers)
   serversRef.current = servers
   const hasServers = servers.length > 0
@@ -118,25 +117,30 @@ export function useLibraryCache({
   useEffect(() => {
     let cancelled = false
 
-    const releaseHold = (generation: number) => {
-      if (releaseGenerationRef.current === generation) syncHoldRef.current = false
+    const replaceTracks = (tracks: Array<Partial<Track> & Pick<Track, 'serverId' | 'fileId'>>) => {
+      const serversById = new Map(serversRef.current.map((server) => [server.id, server]))
+      const next: Record<string, Track> = {}
+      for (const track of tracks) {
+        const cacheKey = getTrackCacheKey(track.serverId, track.fileId)
+        if (!cacheKey) continue
+        next[cacheKey] = rebuildTrackUrls({ ...track, id: track.fileId || 0 } as Track, serversById)
+      }
+      allTracksRef.current = next
+      applyVisibleResultsRef.current()
     }
 
-    const restoreCachedLibrary = async (releaseSyncHold = false) => {
+    const restoreCachedLibrary = async () => {
       const generation = ++restoreGenerationRef.current
-      if (releaseSyncHold) releaseGenerationRef.current = generation
       if (!hasServers || !serverCacheKey) {
         allTracksRef.current = {}
         setResults([])
         setError(null)
         setLoading(false)
-        if (releaseSyncHold) releaseHold(generation)
         return
       }
 
       if (!healthChecksComplete) {
         setLoading(true)
-        if (releaseSyncHold) releaseHold(generation)
         return
       }
 
@@ -145,35 +149,23 @@ export function useLibraryCache({
       try {
         const snapshot = await loadLibraryCache(serverCacheKey)
         if (cancelled || generation !== restoreGenerationRef.current) return
-
-        const serversById = new Map(serversRef.current.map((server) => [server.id, server]))
-        allTracksRef.current = {}
-        for (const track of snapshot?.tracks || []) {
-          const cacheKey = getTrackCacheKey(track.serverId, track.fileId)
-          if (!cacheKey) continue
-          const hydrated = rebuildTrackUrls({ ...track, id: track.fileId || 0 }, serversById)
-          allTracksRef.current[cacheKey] = hydrated
-        }
-
-        applyVisibleResultsRef.current()
+        replaceTracks(snapshot?.tracks || [])
         setError(null)
       } catch {
         if (cancelled || generation !== restoreGenerationRef.current) return
         allTracksRef.current = {}
         setResults([])
       } finally {
-        if (releaseSyncHold) releaseHold(generation)
         if (!cancelled && generation === restoreGenerationRef.current) setLoading(false)
       }
     }
 
-    const handleCacheSyncEvent = (event: Event) => {
-      const detail = (event as CustomEvent<{ cacheKey?: string; phase?: string; error?: string }>).detail
-      if (!detail || detail.cacheKey !== serverCacheKey) return
+    const handleCacheSyncEvent = (detail: LibrarySyncEvent) => {
+      if (detail.cacheKey !== serverCacheKey) return
 
       if (detail.phase === 'started') {
         syncHoldRef.current = true
-        releaseGenerationRef.current = 0
+        restoreGenerationRef.current += 1
         if (persistTimeoutRef.current) {
           window.clearTimeout(persistTimeoutRef.current)
           persistTimeoutRef.current = null
@@ -186,11 +178,15 @@ export function useLibraryCache({
         syncHoldRef.current = false
         if (detail.error) setError(detail.error)
         setLoading(false)
-        persistAllTracks()
+        schedulePersist()
         return
       }
 
-      void restoreCachedLibrary(true)
+      restoreGenerationRef.current += 1
+      replaceTracks(detail.tracks || [])
+      syncHoldRef.current = false
+      setError(null)
+      setLoading(false)
     }
 
     if (boundCacheKeyRef.current !== serverCacheKey) {
@@ -198,15 +194,10 @@ export function useLibraryCache({
       boundCacheKeyRef.current = serverCacheKey
     }
     void restoreCachedLibrary()
-    if (typeof window !== 'undefined') {
-      window.addEventListener(LIBRARY_CACHE_SYNC_EVENT, handleCacheSyncEvent as EventListener)
-    }
-
+    const unsubscribe = subscribeLibrarySync(handleCacheSyncEvent)
     return () => {
       cancelled = true
-      if (typeof window !== 'undefined') {
-        window.removeEventListener(LIBRARY_CACHE_SYNC_EVENT, handleCacheSyncEvent as EventListener)
-      }
+      unsubscribe()
     }
   }, [hasServers, healthChecksComplete, serverCacheKey, serversUrlSignature])
 

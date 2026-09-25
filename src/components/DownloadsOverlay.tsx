@@ -16,7 +16,6 @@ export type DownloadOverlayItem = {
   status: 'downloading' | 'completed' | 'cancelled' | 'error'
   receivedBytes: number
   totalBytes: number | null
-  saveHref?: string
   error?: string
   note?: string
 }

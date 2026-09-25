@@ -16,6 +16,7 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
   const [downloads, setDownloads] = useState<DownloadOverlayItem[]>([])
   const downloadAbortControllersRef = useRef<Record<string, AbortController>>({})
   const downloadUrlsRef = useRef<Record<string, string>>({})
+  const downloadUrlTimersRef = useRef<Record<string, number>>({})
   const inFlightTrackKeysRef = useRef(new Set<string>())
   const cancelledIdsRef = useRef(new Set<string>())
   const dismissedIdsRef = useRef(new Set<string>())
@@ -58,6 +59,9 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
       for (const controller of Object.values(downloadAbortControllersRef.current)) {
         try { controller.abort() } catch {}
       }
+      for (const timerId of Object.values(downloadUrlTimersRef.current)) {
+        window.clearTimeout(timerId)
+      }
       for (const url of Object.values(downloadUrlsRef.current)) {
         try { window.URL.revokeObjectURL(url) } catch {}
       }
@@ -76,13 +80,26 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
   }, [downloads])
 
   const revokeDownloadUrl = useCallback((id: string) => {
+    const timerId = downloadUrlTimersRef.current[id]
+    if (timerId) {
+      window.clearTimeout(timerId)
+      delete downloadUrlTimersRef.current[id]
+    }
     const objectUrl = downloadUrlsRef.current[id]
     if (!objectUrl) return
 
     try { window.URL.revokeObjectURL(objectUrl) } catch {}
     delete downloadUrlsRef.current[id]
-    updateDownload(id, { saveHref: undefined })
-  }, [updateDownload])
+  }, [])
+
+  const scheduleDownloadUrlRevoke = useCallback((id: string, objectUrl: string) => {
+    const existing = downloadUrlTimersRef.current[id]
+    if (existing) window.clearTimeout(existing)
+    downloadUrlTimersRef.current[id] = window.setTimeout(() => {
+      delete downloadUrlTimersRef.current[id]
+      if (downloadUrlsRef.current[id] === objectUrl) revokeDownloadUrl(id)
+    }, 60_000)
+  }, [revokeDownloadUrl])
 
   const queueDownload = useCallback((track: Track, details?: HydrusFileDetails | null) => {
     const id = makeId()
@@ -209,13 +226,10 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
           return
         }
 
-        window.setTimeout(() => {
-          if (downloadUrlsRef.current[id] === objectUrl) revokeDownloadUrl(id)
-        }, 60_000)
+        scheduleDownloadUrlRevoke(id, objectUrl)
         updateDownload(id, {
           status: 'completed',
           fileName: downloadName,
-          saveHref: undefined,
           receivedBytes: blob.size,
           totalBytes: blob.size || resolvedTotalBytes || null,
           note: persistNote,
@@ -237,7 +251,7 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
         cancelledIdsRef.current.delete(id)
       }
     })()
-  }, [isAppleMobileOrTablet, revokeDownloadUrl, updateDownload])
+  }, [isAppleMobileOrTablet, scheduleDownloadUrlRevoke, updateDownload])
 
   const cancelDownload = useCallback((id: string) => {
     cancelledIdsRef.current.add(id)
@@ -264,15 +278,13 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
         const objectUrl = window.URL.createObjectURL(blob)
         downloadUrlsRef.current[id] = objectUrl
         triggerBrowserDownload(objectUrl, download.fileName || 'download')
-        window.setTimeout(() => {
-          if (downloadUrlsRef.current[id] === objectUrl) revokeDownloadUrl(id)
-        }, 60_000)
+        scheduleDownloadUrlRevoke(id, objectUrl)
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
         addDevLog({ kind: 'error', category: 'downloads', message: `Failed to reopen stored download: ${message}` })
       })
-  }, [downloads, revokeDownloadUrl])
+  }, [downloads, scheduleDownloadUrlRevoke])
 
   const dismissDownload = useCallback((id: string) => {
     dismissedIdsRef.current.add(id)
