@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { Box, IconButton, Typography } from '@mui/material'
+import DownloadIcon from '@mui/icons-material/Download'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import type { Track } from '../../types'
@@ -20,6 +21,7 @@ type NestedCatalogLayoutProps = {
   }
   getInteractionProps: (track: Track) => TrackInteractionProps
   onImageError: (event: React.SyntheticEvent<HTMLImageElement>, track?: Track) => void
+  onDownloadTrack: (track: Track) => void
 }
 
 function toggleName(current: Set<string>, name: string) {
@@ -29,7 +31,15 @@ function toggleName(current: Set<string>, name: string) {
   return next
 }
 
-export default function NestedCatalogLayout({ groups, labels, getInteractionProps, onImageError }: NestedCatalogLayoutProps) {
+function getDownloadableTracks(tracks: Track[]) {
+  return tracks.filter((track) => Boolean(track.url))
+}
+
+function formatItemCount(count: number, labels: NestedCatalogLayoutProps['labels']) {
+  return `${count} ${count === 1 ? labels.item.toLowerCase() : `${labels.item.toLowerCase()}s`}`
+}
+
+export default function NestedCatalogLayout({ groups, labels, getInteractionProps, onImageError, onDownloadTrack }: NestedCatalogLayoutProps) {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
   const [collapsedSubgroups, setCollapsedSubgroups] = useState<Set<string>>(new Set())
 
@@ -38,6 +48,7 @@ export default function NestedCatalogLayout({ groups, labels, getInteractionProp
       {groups.map((group) => {
         const poster = group.tracks.find((track) => track.thumbnail) || group.tracks[0]
         const groupOpen = !collapsedGroups.has(group.name)
+        const groupDownloadableTracks = getDownloadableTracks(group.tracks)
 
         return (
           <Box
@@ -78,13 +89,26 @@ export default function NestedCatalogLayout({ groups, labels, getInteractionProp
                   {group.name}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  {group.tracks.length} {group.tracks.length === 1 ? labels.item.toLowerCase() : `${labels.item.toLowerCase()}s`}
+                  {formatItemCount(group.tracks.length, labels)}
                 </Typography>
               </Box>
               <IconButton
                 size="small"
+                aria-label={`download all ${formatItemCount(group.tracks.length, labels)} in ${group.name}`}
+                title={groupDownloadableTracks.length > 0 ? `Download all ${formatItemCount(groupDownloadableTracks.length, labels)}` : 'No downloadable items'}
+                disabled={groupDownloadableTracks.length === 0}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  for (const track of groupDownloadableTracks) onDownloadTrack(track)
+                }}
+                sx={{ color: 'text.secondary', flexShrink: 0 }}
+              >
+                <DownloadIcon fontSize="small" />
+              </IconButton>
+              <IconButton
+                size="small"
                 aria-label={groupOpen ? `collapse ${group.name}` : `expand ${group.name}`}
-                sx={{ color: 'text.secondary', transform: groupOpen ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 160ms ease' }}
+                sx={{ color: 'text.secondary', flexShrink: 0, transform: groupOpen ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 160ms ease' }}
               >
                 <ExpandMoreIcon />
               </IconButton>
@@ -95,6 +119,7 @@ export default function NestedCatalogLayout({ groups, labels, getInteractionProp
                 {group.subgroups.map((subgroup) => {
                   const subgroupKey = `${group.name}:${subgroup.name}`
                   const subgroupOpen = !collapsedSubgroups.has(subgroupKey)
+                  const subgroupDownloadableTracks = getDownloadableTracks(subgroup.tracks)
 
                   return (
                     <Box
@@ -124,13 +149,26 @@ export default function NestedCatalogLayout({ groups, labels, getInteractionProp
                             {subgroup.name}
                           </Typography>
                           <Typography variant="caption" color="text.secondary">
-                            {subgroup.tracks.length} {subgroup.tracks.length === 1 ? labels.item.toLowerCase() : `${labels.item.toLowerCase()}s`}
+                            {formatItemCount(subgroup.tracks.length, labels)}
                           </Typography>
                         </Box>
                         <IconButton
                           size="small"
+                          aria-label={`download all ${formatItemCount(subgroup.tracks.length, labels)} in ${subgroup.name}`}
+                          title={subgroupDownloadableTracks.length > 0 ? `Download all ${formatItemCount(subgroupDownloadableTracks.length, labels)}` : 'No downloadable items'}
+                          disabled={subgroupDownloadableTracks.length === 0}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            for (const track of subgroupDownloadableTracks) onDownloadTrack(track)
+                          }}
+                          sx={{ color: 'text.secondary', flexShrink: 0 }}
+                        >
+                          <DownloadIcon fontSize="small" />
+                        </IconButton>
+                        <IconButton
+                          size="small"
                           aria-label={subgroupOpen ? `collapse ${subgroup.name}` : `expand ${subgroup.name}`}
-                          sx={{ color: 'text.secondary', transform: subgroupOpen ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 160ms ease' }}
+                          sx={{ color: 'text.secondary', flexShrink: 0, transform: subgroupOpen ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 160ms ease' }}
                         >
                           <ExpandMoreIcon fontSize="small" />
                         </IconButton>

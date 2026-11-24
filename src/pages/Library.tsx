@@ -674,6 +674,7 @@ export default function Library({ mediaSection, onPlayNow, onOpenInAppPlayer, on
                 }}
                 getInteractionProps={getTrackInteractionProps}
                 onImageError={handleLibraryImageError}
+                onDownloadTrack={onDownloadTrack}
               />
             ) : shouldShowGroupedTracks ? (
               visibleTrackGroups.map((g) => {
