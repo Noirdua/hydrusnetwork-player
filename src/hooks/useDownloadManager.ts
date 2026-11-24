@@ -12,6 +12,13 @@ import {
   triggerBrowserDownload,
 } from '../utils/downloadHelpers'
 
+type PendingDownload = {
+  id: string
+  track: Track
+  trackKey: string
+  details?: HydrusFileDetails | null
+}
+
 export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrTablet: boolean }) {
   const [downloads, setDownloads] = useState<DownloadOverlayItem[]>([])
   const downloadAbortControllersRef = useRef<Record<string, AbortController>>({})
@@ -20,6 +27,9 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
   const inFlightTrackKeysRef = useRef(new Set<string>())
   const cancelledIdsRef = useRef(new Set<string>())
   const dismissedIdsRef = useRef(new Set<string>())
+  const downloadQueueRef = useRef<PendingDownload[]>([])
+  const activeDownloadCountRef = useRef(0)
+  const queuePumpTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -56,6 +66,10 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
 
   useEffect(() => {
     return () => {
+      if (queuePumpTimerRef.current != null) {
+        window.clearTimeout(queuePumpTimerRef.current)
+        queuePumpTimerRef.current = null
+      }
       for (const controller of Object.values(downloadAbortControllersRef.current)) {
         try { controller.abort() } catch {}
       }
@@ -101,6 +115,182 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
     }, 60_000)
   }, [revokeDownloadUrl])
 
+  const removeQueuedDownload = useCallback((id: string) => {
+    const index = downloadQueueRef.current.findIndex((entry) => entry.id === id)
+    if (index < 0) return
+
+    const [removed] = downloadQueueRef.current.splice(index, 1)
+    inFlightTrackKeysRef.current.delete(removed.trackKey)
+    cancelledIdsRef.current.delete(id)
+  }, [])
+
+  const runDownload = useCallback(async ({ id, track, trackKey, details }: PendingDownload) => {
+    const controller = new AbortController()
+    downloadAbortControllersRef.current[id] = controller
+
+    try {
+      const response = await fetch(track.url, { method: 'GET', mode: 'cors', signal: controller.signal })
+      if (!response.ok) {
+        throw new Error(`Download failed (${response.status})`)
+      }
+
+      const contentLength = Number(response.headers.get('content-length') || '')
+      const resolvedTotalBytes = Number.isFinite(contentLength) && contentLength > 0
+        ? contentLength
+        : details?.sizeBytes || null
+
+      updateDownload(id, { totalBytes: resolvedTotalBytes })
+
+      let blob: Blob
+      if (response.body) {
+        const reader = response.body.getReader()
+        const chunks: ArrayBuffer[] = []
+        let receivedBytes = 0
+        let lastProgressUpdate = 0
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          if (!value) continue
+
+          const chunk = new Uint8Array(value.byteLength)
+          chunk.set(value)
+          chunks.push(chunk.buffer)
+          receivedBytes += value.byteLength
+
+          const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+          if (receivedBytes === resolvedTotalBytes || now - lastProgressUpdate > 120) {
+            updateDownload(id, { receivedBytes })
+            lastProgressUpdate = now
+          }
+        }
+
+        blob = new Blob(chunks, { type: response.headers.get('content-type') || 'application/octet-stream' })
+        updateDownload(id, {
+          receivedBytes,
+          totalBytes: resolvedTotalBytes || blob.size || null,
+        })
+      } else {
+        blob = await response.blob()
+        updateDownload(id, {
+          receivedBytes: blob.size,
+          totalBytes: resolvedTotalBytes || blob.size || null,
+        })
+      }
+
+      if (controller.signal.aborted || cancelledIdsRef.current.has(id)) return
+
+      const shouldEmbedMetadataClientSide = !isAppleMobileOrTablet
+      const taggedDownload = shouldEmbedMetadataClientSide
+        ? await (async () => {
+          updateDownload(id, {
+            note: 'Embedding metadata...',
+          })
+          return embedDownloadMetadata(blob, track, details, response.headers.get('content-type'))
+        })()
+        : {
+          blob,
+          note: 'iOS download: using server-provided metadata (client embedding skipped)',
+        }
+
+      if (controller.signal.aborted || cancelledIdsRef.current.has(id)) return
+
+      blob = taggedDownload.blob
+      const downloadName = buildTrackDownloadName(track, details, response.headers.get('content-disposition'))
+      const objectUrl = window.URL.createObjectURL(blob)
+      downloadUrlsRef.current[id] = objectUrl
+      triggerBrowserDownload(objectUrl, downloadName)
+
+      let persistNote = taggedDownload.note
+      let persisted = false
+      if (!cancelledIdsRef.current.has(id) && !dismissedIdsRef.current.has(id)) {
+        try {
+          await saveStoredDownload({
+            id,
+            trackKey,
+            title: buildHydrusDownloadDisplayTitle(track, details),
+            fileName: downloadName,
+            receivedBytes: blob.size,
+            totalBytes: blob.size || resolvedTotalBytes || null,
+            note: taggedDownload.note,
+            blob,
+            savedAt: Date.now(),
+          })
+          persisted = true
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error)
+          persistNote = persistNote ? `${persistNote} • Not stored for later` : 'Saved this session only (storage failed)'
+          addDevLog({ kind: 'error', category: 'downloads', message: `Failed to persist download: ${message}` })
+        }
+      }
+
+      if (cancelledIdsRef.current.has(id) || dismissedIdsRef.current.has(id)) {
+        if (persisted) {
+          void deleteStoredDownload(id).catch(() => undefined)
+        }
+        revokeDownloadUrl(id)
+        return
+      }
+
+      scheduleDownloadUrlRevoke(id, objectUrl)
+      updateDownload(id, {
+        status: 'completed',
+        fileName: downloadName,
+        receivedBytes: blob.size,
+        totalBytes: blob.size || resolvedTotalBytes || null,
+        note: persistNote,
+      })
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        updateDownload(id, { status: 'cancelled', error: undefined, note: undefined })
+        return
+      }
+
+      updateDownload(id, {
+        status: 'error',
+        error: error instanceof Error ? error.message : 'Download failed.',
+        note: undefined,
+      })
+    } finally {
+      inFlightTrackKeysRef.current.delete(trackKey)
+      delete downloadAbortControllersRef.current[id]
+      cancelledIdsRef.current.delete(id)
+    }
+  }, [isAppleMobileOrTablet, revokeDownloadUrl, scheduleDownloadUrlRevoke, updateDownload])
+
+  const startNextQueuedDownloads = useCallback(() => {
+    if (queuePumpTimerRef.current != null) return
+
+    const maxConcurrentDownloads = isAppleMobileOrTablet ? 1 : Number.POSITIVE_INFINITY
+
+    while (activeDownloadCountRef.current < maxConcurrentDownloads && downloadQueueRef.current.length > 0) {
+      const next = downloadQueueRef.current.shift()
+      if (!next) break
+
+      if (cancelledIdsRef.current.has(next.id) || dismissedIdsRef.current.has(next.id)) {
+        inFlightTrackKeysRef.current.delete(next.trackKey)
+        cancelledIdsRef.current.delete(next.id)
+        continue
+      }
+
+      activeDownloadCountRef.current += 1
+      updateDownload(next.id, { note: undefined })
+      void runDownload(next).finally(() => {
+        activeDownloadCountRef.current = Math.max(0, activeDownloadCountRef.current - 1)
+
+        if (isAppleMobileOrTablet && downloadQueueRef.current.length > 0) {
+          queuePumpTimerRef.current = window.setTimeout(() => {
+            queuePumpTimerRef.current = null
+            startNextQueuedDownloads()
+          }, 1500)
+          return
+        }
+
+        startNextQueuedDownloads()
+      })
+    }
+  }, [isAppleMobileOrTablet, runDownload, updateDownload])
+
   const queueDownload = useCallback((track: Track, details?: HydrusFileDetails | null) => {
     const id = makeId()
     const trackKey = buildTrackDownloadKey(track)
@@ -115,143 +305,13 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
       status: 'downloading',
       receivedBytes: 0,
       totalBytes: details?.sizeBytes || null,
+      note: isAppleMobileOrTablet ? 'Queued' : undefined,
     }
 
     setDownloads((prev) => [initialItem, ...prev])
-
-    const controller = new AbortController()
-    downloadAbortControllersRef.current[id] = controller
-    void (async () => {
-      try {
-        const response = await fetch(track.url, { method: 'GET', mode: 'cors', signal: controller.signal })
-        if (!response.ok) {
-          throw new Error(`Download failed (${response.status})`)
-        }
-
-        const contentLength = Number(response.headers.get('content-length') || '')
-        const resolvedTotalBytes = Number.isFinite(contentLength) && contentLength > 0
-          ? contentLength
-          : details?.sizeBytes || null
-
-        updateDownload(id, { totalBytes: resolvedTotalBytes })
-
-        let blob: Blob
-        if (response.body) {
-          const reader = response.body.getReader()
-          const chunks: ArrayBuffer[] = []
-          let receivedBytes = 0
-          let lastProgressUpdate = 0
-
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            if (!value) continue
-
-            const chunk = new Uint8Array(value.byteLength)
-            chunk.set(value)
-            chunks.push(chunk.buffer)
-            receivedBytes += value.byteLength
-
-            const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
-            if (receivedBytes === resolvedTotalBytes || now - lastProgressUpdate > 120) {
-              updateDownload(id, { receivedBytes })
-              lastProgressUpdate = now
-            }
-          }
-
-          blob = new Blob(chunks, { type: response.headers.get('content-type') || 'application/octet-stream' })
-          updateDownload(id, {
-            receivedBytes,
-            totalBytes: resolvedTotalBytes || blob.size || null,
-          })
-        } else {
-          blob = await response.blob()
-          updateDownload(id, {
-            receivedBytes: blob.size,
-            totalBytes: resolvedTotalBytes || blob.size || null,
-          })
-        }
-
-        if (controller.signal.aborted || cancelledIdsRef.current.has(id)) return
-
-        const shouldEmbedMetadataClientSide = !isAppleMobileOrTablet
-        const taggedDownload = shouldEmbedMetadataClientSide
-          ? await (async () => {
-            updateDownload(id, {
-              note: 'Embedding metadata...',
-            })
-            return embedDownloadMetadata(blob, track, details, response.headers.get('content-type'))
-          })()
-          : {
-            blob,
-            note: 'iOS download: using server-provided metadata (client embedding skipped)',
-          }
-
-        if (controller.signal.aborted || cancelledIdsRef.current.has(id)) return
-
-        blob = taggedDownload.blob
-        const downloadName = buildTrackDownloadName(track, details, response.headers.get('content-disposition'))
-        const objectUrl = window.URL.createObjectURL(blob)
-        downloadUrlsRef.current[id] = objectUrl
-        triggerBrowserDownload(objectUrl, downloadName)
-
-        let persistNote = taggedDownload.note
-        let persisted = false
-        if (!cancelledIdsRef.current.has(id) && !dismissedIdsRef.current.has(id)) {
-          try {
-            await saveStoredDownload({
-              id,
-              trackKey,
-              title: buildHydrusDownloadDisplayTitle(track, details),
-              fileName: downloadName,
-              receivedBytes: blob.size,
-              totalBytes: blob.size || resolvedTotalBytes || null,
-              note: taggedDownload.note,
-              blob,
-              savedAt: Date.now(),
-            })
-            persisted = true
-          } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : String(error)
-            persistNote = persistNote ? `${persistNote} • Not stored for later` : 'Saved this session only (storage failed)'
-            addDevLog({ kind: 'error', category: 'downloads', message: `Failed to persist download: ${message}` })
-          }
-        }
-
-        if (cancelledIdsRef.current.has(id) || dismissedIdsRef.current.has(id)) {
-          if (persisted) {
-            void deleteStoredDownload(id).catch(() => undefined)
-          }
-          revokeDownloadUrl(id)
-          return
-        }
-
-        scheduleDownloadUrlRevoke(id, objectUrl)
-        updateDownload(id, {
-          status: 'completed',
-          fileName: downloadName,
-          receivedBytes: blob.size,
-          totalBytes: blob.size || resolvedTotalBytes || null,
-          note: persistNote,
-        })
-      } catch (error: unknown) {
-        if (error instanceof Error && error.name === 'AbortError') {
-          updateDownload(id, { status: 'cancelled', error: undefined, note: undefined })
-          return
-        }
-
-        updateDownload(id, {
-          status: 'error',
-          error: error instanceof Error ? error.message : 'Download failed.',
-          note: undefined,
-        })
-      } finally {
-        inFlightTrackKeysRef.current.delete(trackKey)
-        delete downloadAbortControllersRef.current[id]
-        cancelledIdsRef.current.delete(id)
-      }
-    })()
-  }, [isAppleMobileOrTablet, scheduleDownloadUrlRevoke, updateDownload])
+    downloadQueueRef.current.push({ id, track, trackKey, details })
+    startNextQueuedDownloads()
+  }, [isAppleMobileOrTablet, startNextQueuedDownloads])
 
   const cancelDownload = useCallback((id: string) => {
     cancelledIdsRef.current.add(id)
@@ -259,8 +319,9 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
     if (controller) {
       try { controller.abort() } catch {}
     }
+    removeQueuedDownload(id)
     updateDownload(id, { status: 'cancelled' })
-  }, [updateDownload])
+  }, [removeQueuedDownload, updateDownload])
 
   const saveDownloadAgain = useCallback((id: string) => {
     const download = downloads.find((entry) => entry.id === id)
@@ -292,13 +353,14 @@ export function useDownloadManager({ isAppleMobileOrTablet }: { isAppleMobileOrT
     if (downloadAbortControllersRef.current[id]) {
       try { downloadAbortControllersRef.current[id].abort() } catch {}
     }
+    removeQueuedDownload(id)
     revokeDownloadUrl(id)
     setDownloads((prev) => prev.filter((download) => download.id !== id))
     void deleteStoredDownload(id).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       addDevLog({ kind: 'error', category: 'downloads', message: `Failed to delete stored download: ${message}` })
     })
-  }, [revokeDownloadUrl])
+  }, [removeQueuedDownload, revokeDownloadUrl])
 
   const clearFinishedDownloads = useCallback(() => {
     setDownloads((prev) => {
